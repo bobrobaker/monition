@@ -23,6 +23,11 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 
 ## Context hygiene
 
+- **Docs lag code — trust the source, not the prose.** The store model is
+  mid-refactor (Dolt→SQLite default landed; general/project scoping unsettled), so
+  treat docs as an index to *where* code lives, never as ground truth for *what it
+  does*. Confirm any load-bearing claim against the source; when behavior is the
+  question, run a quick test or REPL check rather than inferring from a doc.
 - Grep for symbols, fields, constants, and call sites before reading any file.
 - Structure-scan before any markdown range read: `grep -n "^##" <file>.md` first, then
   bounded reads of only the needed sections. Applies to all docs, not just code.

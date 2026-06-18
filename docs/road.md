@@ -21,12 +21,19 @@ a refinement conversation, not enough to implement directly.
 
 ## 2. Design positions (durable, cross-phase)
 
-- **One owner for the machinery; data stays per-project.** Monition owns all
+- **One owner for the machinery; one CMS-managed store.** Monition owns all
   takeaway machinery — store schema, hook executors, `init`/`sync`/`migrate`,
-  reader, metrics, report, scoring. Rows live in per-project Monition stores
-  (Dolt at the convention path `<repo-root>/monition/`), created by `monition
-  init`; no central data storage of any kind. Field semantics are never
+  reader, metrics, report, scoring. Rows live in a **single CMS-managed store**
+  (the "hub"), with the project/general distinction carried as columns (`reach` +
+  `origin_repo`), not physical per-repo boundaries. monition resolves the store
+  from `MONITION_STORE` → `<repo-root>/monition/` fallback (unset = standalone
+  mode); CMS owns the hub's location + lifecycle. Backend SQLite, default;
+  cross-machine distribution deferred to the Dolt seam. Field semantics are never
   reinterpreted outside the data contract in `docs/contracts/takeaway-store.md`.
+  *(Ratified via CMS confer 2026-06-18 —
+  `docs/decisions/2026-06-18-single-store-general-project-scoping.md`; supersedes
+  the former per-project-store position. Implementation is the pending v5→v6 step;
+  the contract still describes per-repo stores until then.)*
 - **Trigger-as-data.** Rows own *what fires when*; the module owns *how matching
   executes*. The founding bet is untouched by the ownership realignment.
 - **Fail-open everywhere — absent and broken.** A hook must never block a
