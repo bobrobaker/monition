@@ -1,0 +1,4 @@
+#!/bin/sh
+# Tier-1 enforcement: mechanical invariants block, semantic judgment doesn't.
+# Arm once per clone: git config core.hooksPath .githooks
+exec python3 "$(git rev-parse --show-toplevel)/tools/lint.py"
