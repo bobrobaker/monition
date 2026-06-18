@@ -3,10 +3,11 @@
 The installable module that owns all takeaway machinery: store schema, hook
 executors, `init`/`sync`/`migrate`, the reader, metrics, report, and the online EV
 scorer that gates fire/suppress decisions (`monition score`, shipped Phase 3). Host projects install Monition once per machine and run
-`monition init`; data stays per-project in a **Monition store** (a Dolt instance at
-the convention path `<repo-root>/monition/`; `takeaways` + `firings` tables) under
-the contract in `docs/contracts/takeaway-store.md`. Trigger-as-data survives: rows
-own *what fires when*; the module owns *how matching executes*.
+`monition init`; data stays per-project in a **Monition store** (a SQLite database
+at the convention path `<repo-root>/monition/store.db`; `takeaways`, `firings`, and
+`decisions` tables; Dolt backend available via `--dolt` or auto-detected from
+`.dolt/`) under the contract in `docs/contracts/takeaway-store.md`. Trigger-as-data
+survives: rows own *what fires when*; the module owns *how matching executes*.
 
 Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 "gotchas") for the rows — never "monitions" for rows.
@@ -14,8 +15,7 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 ## Map
 
 - `src/monition/` — the module: store reader (the only approved reader of store
-  data), metrics, report CLI; lifecycle commands, hook executors, and
-  init/sync/migrate land across Phase 2.
+  data), metrics, report CLI, lifecycle commands, hook executors, init/sync/migrate.
 - `docs/contracts/` — the Monition-store data contract; consumers cite sections,
   never duplicate them.
 - `docs/road.md` — phase roadmap.
@@ -45,9 +45,8 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
   store. `road.md §2` stays the compressed verdict that links back.
 - Wrapping up mid-task: `/handoff` writes a decision-ready handoff to `handoffs/`.
 - Store writes flow only through module commands; all store reads go through the
-  single approved reader in `src/monition/`. Any other code issuing `dolt sql`
-  against a Monition store is a contract violation. Nothing writes to the real CMS
-  store before the cutover bucket (B06).
+  single approved reader in `src/monition/`. Any other code querying the store
+  directly (bypassing the reader or WriteStore) is a contract violation.
 - **The eval substrate is monition's; the tier-3 evaluator is not.** Monition owns
   and *exposes* the row-coupled eval substrate (firings/ratings + fire-time
   provenance) and the ΔP(fail) graduation-seam currency, via the `export-firings`
