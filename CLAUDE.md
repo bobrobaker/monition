@@ -52,6 +52,11 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 - Store writes flow only through module commands; all store reads go through the
   single approved reader in `src/monition/`. Any other code querying the store
   directly (bypassing the reader or WriteStore) is a contract violation.
+- **Hooks are blocking, cold subprocesses.** Each `fire-hook`/`session-brief`/
+  `prompt-hook` run is a fresh process with no warm state, on the user's critical
+  path, under the harness timeout (`UserPromptSubmit` = 30 s). Anything heavy —
+  model load, network fetch, downloads — must be pre-staged off the hook path,
+  never done lazily inside it.
 - **The eval substrate is monition's; the tier-3 evaluator is not.** Monition owns
   and *exposes* the row-coupled eval substrate (firings/ratings + fire-time
   provenance) and the ΔP(fail) graduation-seam currency, via the `export-firings`
