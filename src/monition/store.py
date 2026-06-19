@@ -34,7 +34,8 @@ _REQUIRED = {
         "full_content": r"^text",
         "source": r"^varchar",
         "status": r"^enum\('active','retired'\)$",
-        "mirror": r"^enum\('none','candidate','mirrored'\)$",
+        "reach": r"^enum\('general','project'\)$",
+        "origin_repo": r"^varchar",
     },
     "firings": {
         "id": r"^int",
@@ -49,6 +50,7 @@ _REQUIRED = {
         "model": r"^varchar",
         "monition_version": r"^varchar",
         "situation": r"^text",
+        "repo": r"^varchar",
     },
     "decisions": {
         "id": r"^int",
@@ -73,7 +75,8 @@ _REQUIRED_SQLITE = {
         "full_content": r"^TEXT$",
         "source": r"^TEXT$",
         "status": r"^TEXT$",
-        "mirror": r"^TEXT$",
+        "reach": r"^TEXT$",
+        "origin_repo": r"^TEXT$",
     },
     "firings": {
         "id": r"^INTEGER$",
@@ -88,6 +91,7 @@ _REQUIRED_SQLITE = {
         "model": r"^TEXT$",
         "monition_version": r"^TEXT$",
         "situation": r"^TEXT$",
+        "repo": r"^TEXT$",
     },
     "decisions": {
         "id": r"^INTEGER$",
@@ -118,7 +122,8 @@ class Takeaway:
     full_content: Optional[str]
     source: Optional[str]
     status: str
-    mirror: str
+    reach: str
+    origin_repo: Optional[str]
 
     @property
     def firing_eligible(self):
@@ -179,44 +184,57 @@ class Store:
                 f"query failed against {self.path}: {e}"
             ) from e
 
+    def _detect_stale_schema(self):
+        """Version-ladder detection, oldest→newest, so the migrate message names
+        the *actual* gap. Runs before the per-table column checks (which assume v6
+        columns). Missing-table cases fall through to those checks."""
+        takeaway_cols = {r["Field"]: r["Type"]
+                         for r in self._backend.describe("takeaways")}
+        firing_cols = {r["Field"] for r in self._backend.describe("firings")}
+        decisions_present = bool(self._backend.describe("decisions"))
+
+        # v1 detection (Dolt only — SQLite stores are always fresh)
+        if (self._backend.name == "dolt"
+                and takeaway_cols.get("status") == _V1_STATUS):
+            raise StoreContractError(
+                "v1-dialect store: `status` still carries mirror-back state "
+                "(upstream_candidate/mirrored) — migrate the store to the v2 "
+                "schema (status active|retired + mirror column) before reading"
+            )
+        if takeaway_cols and not decisions_present:
+            raise StoreContractError(
+                "v2-schema store: missing `decisions` table — "
+                "run `monition migrate` to upgrade to v3"
+            )
+        if firing_cols and "git_sha" not in firing_cols:
+            raise StoreContractError(
+                "v3-schema store: `firings` lacks fire-time provenance "
+                "(git_sha/git_dirty/model/monition_version) — "
+                "run `monition migrate` to upgrade to v4"
+            )
+        if "git_sha" in firing_cols and "situation" not in firing_cols:
+            raise StoreContractError(
+                "v4-schema store: `firings` lacks the `situation` column — "
+                "run `monition migrate` to upgrade to v5"
+            )
+        if takeaway_cols and "reach" not in takeaway_cols:
+            raise StoreContractError(
+                "v5-schema store: `takeaways` lacks `reach`/`origin_repo` — "
+                "run `monition migrate` to upgrade to v6"
+            )
+
     def _validate_schema(self):
         required = (
             _REQUIRED_SQLITE if self._backend.name == "sqlite" else _REQUIRED
         )
+        self._detect_stale_schema()
         for table, cols_required in required.items():
             col_rows = self._backend.describe(table)
             if not col_rows:
-                if table == "decisions":
-                    raise StoreContractError(
-                        "v2-schema store: missing `decisions` table — "
-                        "run `monition migrate` to upgrade to v3"
-                    )
                 raise StoreContractError(
                     f"missing required table `{table}` in {self.path}"
                 )
             cols = {r["Field"]: r["Type"] for r in col_rows}
-
-            # v1 detection (Dolt only — SQLite stores are always fresh)
-            if (self._backend.name == "dolt"
-                    and table == "takeaways"
-                    and cols.get("status") == _V1_STATUS):
-                raise StoreContractError(
-                    "v1-dialect store: `status` still carries mirror-back state "
-                    "(upstream_candidate/mirrored) — migrate the store to the v2 "
-                    "schema (status active|retired + mirror column) before reading"
-                )
-
-            if table == "firings" and "git_sha" not in cols:
-                raise StoreContractError(
-                    "v3-schema store: `firings` lacks fire-time provenance "
-                    "(git_sha/git_dirty/model/monition_version) — "
-                    "run `monition migrate` to upgrade to v4"
-                )
-            if table == "firings" and "git_sha" in cols and "situation" not in cols:
-                raise StoreContractError(
-                    "v4-schema store: `firings` lacks the `situation` column — "
-                    "run `monition migrate` to upgrade to v5"
-                )
             for name, pattern in cols_required.items():
                 if name not in cols:
                     raise StoreContractError(
@@ -232,7 +250,7 @@ class Store:
     def takeaways(self):
         rows = self._sql(
             "SELECT id, created, kind, scope, trigger_kind, trigger_spec,"
-            " one_liner, full_content, source, status, mirror"
+            " one_liner, full_content, source, status, reach, origin_repo"
             " FROM takeaways ORDER BY id"
         )
         return [
@@ -241,7 +259,7 @@ class Store:
                 scope=r.get("scope"), trigger_kind=r["trigger_kind"],
                 trigger_spec=r.get("trigger_spec"), one_liner=r["one_liner"],
                 full_content=r.get("full_content"), source=r.get("source"),
-                status=r["status"], mirror=r["mirror"],
+                status=r["status"], reach=r["reach"], origin_repo=r.get("origin_repo"),
             )
             for r in rows
         ]

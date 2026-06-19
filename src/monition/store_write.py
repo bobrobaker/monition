@@ -19,11 +19,12 @@ import subprocess
 from .store import Store, StoreContractError
 
 
-def resolve_store_path():
-    """Convention path: <host-repo-root>/monition/.
-
-    Host repo root comes from $CLAUDE_PROJECT_DIR (set for hook commands),
-    falling back to `git rev-parse --show-toplevel` from cwd.
+def current_repo():
+    """Absolute host repo root: $CLAUDE_PROJECT_DIR (set for hook commands),
+    falling back to `git rev-parse --show-toplevel` from cwd. None when neither
+    resolves. **Independent of store location** — the store may be a shared hub
+    elsewhere (v6); this is always the repo the work is happening in, and it is
+    what the reach filter and firing provenance key on.
     """
     root = os.environ.get("CLAUDE_PROJECT_DIR")
     if not root:
@@ -32,7 +33,41 @@ def resolve_store_path():
             capture_output=True, text=True,
         )
         root = out.stdout.strip() if out.returncode == 0 else None
+    return root
+
+
+def resolve_store_path():
+    """Store directory. $MONITION_STORE (the v6 hub, if set) wins; otherwise the
+    convention path <host-repo-root>/monition/. Unset $MONITION_STORE with no
+    detectable repo = no store (standalone/no-hub).
+    """
+    store = os.environ.get("MONITION_STORE")
+    if store:
+        return store
+    root = current_repo()
     return os.path.join(root, "monition") if root else None
+
+
+def reach_clause(repo):
+    """SQL predicate gating *where* a row fires: `general` reach fires in any repo,
+    `project` only where `origin_repo` equals the current repo.
+
+    `repo is None` means the caller has no repo context — the reach filter is then
+    **not applied** (fail-open, legacy behavior). Every auto-injection hot path (the
+    hooks) supplies its repo, so the gate is live where leakage would be silent; the
+    only callers that can pass None are explicit pulls (cli `query`, mcp
+    `match_gotchas`) with no detectable repo, where returning the unfiltered set is
+    a transparent "you asked, here's everything."
+    """
+    if repo is None:
+        return ""
+    # `origin_repo IS NULL` fires anywhere: a project row that never declared its
+    # repo is under-specified, so fail-open rather than silently suppress (the
+    # store's NULL-is-missing stance). Real v6 project rows always carry origin_repo
+    # (add() stamps the current repo; migrate backfills it), so isolation holds for
+    # every properly-specified row — only malformed/legacy NULLs fire broadly.
+    return (f" AND (reach = 'general' OR origin_repo IS NULL"
+            f" OR origin_repo = {val(repo)})")
 
 
 def esc(s):
@@ -105,12 +140,19 @@ class WriteStore(Store):
     """Store opened for the lifecycle commands; contract-validated like the reader."""
 
     def add(self, kind, trigger_kind, one_liner, trigger_spec=None,
-            full_content=None, scope=None, source=None, mirror="none"):
+            full_content=None, scope=None, source=None, reach="project",
+            origin_repo=None):
+        # A project row with no origin_repo can never fire (origin_repo = NULL
+        # never matches the reach predicate), so stamp the current repo. general
+        # rows fire anywhere and need no origin.
+        if reach == "project" and origin_repo is None:
+            origin_repo = current_repo()
         self._sql(
             "INSERT INTO takeaways (created, kind, scope, trigger_kind, trigger_spec,"
-            " one_liner, full_content, source, mirror) VALUES (NOW(), "
+            " one_liner, full_content, source, reach, origin_repo) VALUES (NOW(), "
             f"{val(kind)}, {val(scope)}, {val(trigger_kind)}, {val(trigger_spec)},"
-            f" {val(one_liner)}, {val(full_content)}, {val(source)}, {val(mirror)})"
+            f" {val(one_liner)}, {val(full_content)}, {val(source)}, {val(reach)},"
+            f" {val(origin_repo)})"
         )
         # each `dolt sql -q` is its own connection, so LAST_INSERT_ID() is useless here
         row = self._sql("SELECT MAX(id) AS id FROM takeaways")
@@ -118,14 +160,14 @@ class WriteStore(Store):
 
     def list_rows(self, status="active"):
         rows = self._sql(
-            "SELECT id, kind, trigger_kind, trigger_spec, status, mirror, one_liner"
+            "SELECT id, kind, trigger_kind, trigger_spec, status, reach, one_liner"
             f" FROM takeaways WHERE status = {val(status)} ORDER BY id"
         )
         lines = []
         for r in rows:
             spec = r.get("trigger_spec") or "-"
-            mirror = f" [{r['mirror']}]" if r.get("mirror") not in (None, "none") else ""
-            lines.append(f"[{r['id']}] {r['kind']}/{r['trigger_kind']}({spec}){mirror} {r['one_liner']}")
+            reach = f" [{r['reach']}]" if r.get("reach") == "general" else ""
+            lines.append(f"[{r['id']}] {r['kind']}/{r['trigger_kind']}({spec}){reach} {r['one_liner']}")
         if not rows:
             lines.append(f"(no takeaways with status {status})")
         return "\n".join(lines)
@@ -144,10 +186,11 @@ class WriteStore(Store):
         fired_ids = {r["takeaway_id"] for r in fired}
         return [r for r in rows if r["id"] not in fired_ids]
 
-    def match(self, path, session=None):
+    def match(self, path, session=None, current_repo=None):
         rows = self._sql(
             "SELECT id, one_liner, trigger_spec FROM takeaways"
             " WHERE status = 'active' AND trigger_kind = 'edit_path'"
+            + reach_clause(current_repo)
         )
         hits = [
             r for r in rows
@@ -156,10 +199,11 @@ class WriteStore(Store):
         ]
         return json.dumps(self._not_yet_fired(hits, session))
 
-    def on_demand_match(self, query, session=None):
+    def on_demand_match(self, query, session=None, current_repo=None):
         rows = self._sql(
             "SELECT id, one_liner, trigger_spec FROM takeaways"
             " WHERE status = 'active' AND trigger_kind = 'on_demand'"
+            + reach_clause(current_repo)
         )
         q = query.lower()
 
@@ -188,26 +232,33 @@ class WriteStore(Store):
                 pass
         return json.dumps(self._not_yet_fired(hits, session))
 
-    def session_start(self, session=None):
+    def session_start(self, session=None, current_repo=None):
         rows = self._sql(
             "SELECT id, one_liner FROM takeaways"
             " WHERE status = 'active' AND trigger_kind = 'session_start'"
+            + reach_clause(current_repo)
         )
         return json.dumps(self._not_yet_fired(rows, session))
 
     def fire(self, takeaway_id, trigger_kind, session=None, context=None,
-             model=None, situation=None):
-        # v4 fire-time provenance: git state captured here (the only place that
-        # knows the store, hence the host repo); model supplied by the caller (it
-        # is harness state the writer can't see). v5 `situation` is the firing-grain
-        # excerpt the executor captured (or None). All nullable, all fail-open.
-        git_sha, git_dirty = _git_provenance(os.path.dirname(self.path))
+             model=None, situation=None, current_repo=None):
+        # v4 provenance: git state of the *host repo* (current_repo), not the store
+        # dir — under a v6 hub `os.path.dirname(self.path)` is the hub, not the repo.
+        # current_repo is None only for mine-time self-calls (recurrence logging),
+        # where there is no host-repo disclosure context; fall back to the store dir
+        # for best-effort provenance there and record repo = NULL (honestly unknown).
+        # v6 `repo`: the host repo at fire time — capture-or-lose, recovers per-repo
+        # precision for general-reach rows. v5 `situation`: the executor's excerpt.
+        provenance_root = current_repo or os.path.dirname(self.path)
+        git_sha, git_dirty = _git_provenance(provenance_root)
         self._sql(
             "INSERT INTO firings (takeaway_id, fired_at, session_id, trigger_kind,"
-            " trigger_context, git_sha, git_dirty, model, monition_version, situation)"
+            " trigger_context, git_sha, git_dirty, model, monition_version, situation,"
+            " repo)"
             f" VALUES ({iid(takeaway_id)}, NOW(), {val(session)},"
             f" {val(trigger_kind)}, {val(context)}, {val(git_sha)},"
-            f" {bval(git_dirty)}, {val(model)}, {val(_monition_version())}, {val(situation)})"
+            f" {bval(git_dirty)}, {val(model)}, {val(_monition_version())}, {val(situation)},"
+            f" {val(current_repo)})"
         )
         row = self._sql("SELECT MAX(id) AS id FROM firings")
         return f"firing {row[0]['id']}"
@@ -288,14 +339,14 @@ class WriteStore(Store):
 
     def resolve_add(self, resolve, kind, trigger_kind, one_liner,
                     trigger_spec=None, full_content=None, scope=None,
-                    source=None, mirror="none"):
+                    source=None, reach="project", origin_repo=None):
         """Apply a consent-gate resolution to a detected resurrection:
         new (override-create) | merge:ID (fold the wording in) | log-helpful:ID
         (revive by recording the recurrence as helpful-equivalent)."""
         choice, _, target = resolve.partition(":")
         if choice == "new":
             return self.add(kind, trigger_kind, one_liner, trigger_spec,
-                            full_content, scope, source, mirror)
+                            full_content, scope, source, reach, origin_repo)
         if not target:
             raise StoreContractError(
                 f"--resolve {choice} needs a target id, e.g. {choice}:t12")
@@ -324,18 +375,19 @@ class WriteStore(Store):
         return f"merged into takeaway {takeaway_id}"
 
     def log_helpful_equivalent(self, takeaway_id, context=None, session=None,
-                               trigger_kind="resurrection"):
+                               trigger_kind="resurrection", current_repo=None):
         """Record a recurrence as a helpful firing (fire + rate-helpful in one
         step). Used two ways, kept separable by trigger_kind for honest
         provenance: 'resurrection' (revive a suppressed row — the only
         'un-suppress' when suppression is computed from ratings) and 'recurrence'
         (a mine-time already-covered hit on an active row; see log_recurrence)."""
         fid = iid(self.fire(takeaway_id, trigger_kind, session=session,
-                            context=context).split()[-1])
+                            context=context, current_repo=current_repo).split()[-1])
         self.rate(fid, "helpful")
         return fid
 
-    def log_recurrence(self, takeaway_id, context=None, session=None):
+    def log_recurrence(self, takeaway_id, context=None, session=None,
+                       current_repo=None):
         """Log a mine-time 'already covered by this row' recurrence as a helpful
         firing against an *active* row — evidence the row is load-bearing that
         would otherwise evaporate, and the accelerant that grows rated firings
@@ -350,7 +402,8 @@ class WriteStore(Store):
         that scope is CMS's mine-session discipline, not this verb's job."""
         return self.log_helpful_equivalent(takeaway_id, context=context,
                                            session=session,
-                                           trigger_kind="recurrence")
+                                           trigger_kind="recurrence",
+                                           current_repo=current_repo)
 
     def commit(self, message):
         return self._backend.snapshot(message)

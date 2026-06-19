@@ -103,7 +103,7 @@ def test_adopt_round_trip(fresh_store, tmp_path):
     assert t1.full_content == (
         "The why lives here.\n\n"
         "Multi-paragraph, blank interior line preserved.")
-    assert (t1.status, t1.mirror) == ("active", "none")  # defaults applied
+    assert (t1.status, t1.reach) == ("active", "project")  # defaults applied
     assert (t2.kind, t2.trigger_kind, t2.trigger_spec, t2.full_content,
             t2.scope, t2.source) == (
         "rule", "session_start", None, None, None, None)

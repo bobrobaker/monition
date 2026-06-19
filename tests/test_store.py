@@ -55,8 +55,9 @@ def test_firing_eligibility(canonical_store):
     from monition.store import FIRING_ELIGIBLE
     assert FIRING_ELIGIBLE == ("active",)
     by_id = {t.id: t for t in Store(canonical_store).takeaways()}
-    assert by_id[3].firing_eligible  # mirror candidate: candidacy never mutes
-    assert by_id[6].firing_eligible  # mirrored: same
+    assert by_id[3].firing_eligible  # general reach: reach never mutes firing
+    assert by_id[6].firing_eligible  # general reach: same
+    assert by_id[3].reach == "general" and by_id[6].reach == "general"
     assert not by_id[5].firing_eligible  # retired
 
 

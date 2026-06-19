@@ -9,18 +9,39 @@ the cache is always safe. Callers must treat any exception from this module as
 import hashlib
 import json
 import os
+import socket
+import subprocess
+import sys
 
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
 SIM_THRESHOLD = 0.6
 
+# Warm daemon (opt-in): a long-lived process holds the model in memory so cold
+# hooks pay the ~1s load once instead of every fire. Off by default — the in-process
+# path is unchanged. Fail-open is absolute: a missing/wedged daemon must never block.
+DAEMON_IDLE_TIMEOUT = 300  # seconds with no connection → the daemon exits
+_DAEMON_CONNECT_TIMEOUT = 5  # a wedged daemon must not stall a prompt
+
 _model = None
 
 
-def _cache_file():
-    root = os.environ.get("XDG_CACHE_HOME") or os.path.join(
+def _cache_root():
+    return os.environ.get("XDG_CACHE_HOME") or os.path.join(
         os.path.expanduser("~"), ".cache"
     )
-    return os.path.join(root, "monition", "embed-cache.json")
+
+
+def _cache_file():
+    return os.path.join(_cache_root(), "monition", "embed-cache.json")
+
+
+def _weights_dir():
+    """Managed, persistent home for the fastembed model weights. Without an
+    explicit cache_dir fastembed downloads into an ephemeral /tmp dir, which never
+    survives a cold blocking hook under the 30s timeout — semantic matching then
+    silently never works. Staging weights here (once, off the hook path) is the
+    actual unblock."""
+    return os.path.join(_cache_root(), "monition", "fastembed")
 
 
 def _key(text):
@@ -46,15 +67,144 @@ def _embed_raw(texts):
     global _model
     if _model is None:
         from fastembed import TextEmbedding
-        _model = TextEmbedding(model_name=MODEL_NAME)
+        cache_dir = _weights_dir()
+        os.makedirs(cache_dir, exist_ok=True)
+        _model = TextEmbedding(model_name=MODEL_NAME, cache_dir=cache_dir)
     return [[float(x) for x in v] for v in _model.embed(texts)]
+
+
+def warm():
+    """Pre-fetch the model weights into the managed cache, off any hook path.
+    Returns a status string. Fail-open on a missing extra: the embed layer is
+    optional and callers degrade to lexical, so an absent fastembed is "skipped",
+    not an error. A genuine download failure propagates (the caller surfaces it)."""
+    try:
+        import fastembed  # noqa: F401
+    except ImportError:
+        return "fastembed not installed (pip install 'monition[embed]') — semantic matching disabled, skipped"
+    _embed_raw(["warm"])  # forces the weight download into _weights_dir()
+    return f"embedding weights staged at {_weights_dir()}"
+
+
+def _daemon_enabled():
+    return bool(os.environ.get("MONITION_EMBED_DAEMON"))
+
+
+def _socket_path():
+    root = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    return os.path.join(root, "monition-embed.sock")
+
+
+def _daemon_embed(texts):
+    """Client: ask the warm daemon to embed `texts`. Raises on any socket problem
+    so the caller falls back — a short timeout guarantees a wedged daemon can never
+    stall a prompt. Protocol: one newline-framed JSON request/response per call."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(_DAEMON_CONNECT_TIMEOUT)
+    try:
+        s.connect(_socket_path())
+        f = s.makefile("rwb")
+        f.write((json.dumps({"texts": list(texts)}) + "\n").encode())
+        f.flush()
+        line = f.readline()
+        if not line:
+            raise OSError("daemon closed the connection")
+        return json.loads(line)["vecs"]
+    finally:
+        s.close()
+
+
+def _spawn_daemon():
+    """Fire-and-forget: start the warm daemon detached. Never waits, never raises
+    into the caller — a spawn failure just means we stay on the in-process path."""
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", "import monition.embed as e; e.run_daemon()"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except Exception:
+        pass
+
+
+def _embed(texts):
+    """Daemon-aware embed dispatcher. Opt-in via MONITION_EMBED_DAEMON; fail-open
+    chain: daemon socket → spawn-and-serve-in-process → (caller) lexical. Default
+    off = the in-process primitive only, behaviourally identical to pre-daemon."""
+    if not _daemon_enabled():
+        return _embed_raw(texts)
+    try:
+        return _daemon_embed(texts)
+    except Exception:
+        _spawn_daemon()           # warm one for next time
+        return _embed_raw(texts)  # serve this call now — never block on warm-up
+
+
+def _serve_one(conn):
+    """Answer one embed request. A bad/short request is swallowed, never fatal to
+    the daemon."""
+    try:
+        f = conn.makefile("rwb")
+        line = f.readline()
+        if not line:
+            return
+        texts = json.loads(line)["texts"]
+        vecs = _embed_raw(texts)
+        f.write((json.dumps({"vecs": vecs}) + "\n").encode())
+        f.flush()
+    except Exception:
+        pass
+
+
+def run_daemon(idle_timeout=DAEMON_IDLE_TIMEOUT):
+    """Warm embed daemon: hold the model in memory, answer embed requests over a
+    unix socket, idle-exit after `idle_timeout` seconds with no connection. One per
+    machine — if a live daemon already owns the socket we exit immediately; a stale
+    socket (owner died) is reclaimed. Fail-open: any error ends the daemon cleanly,
+    callers just fall back to in-process."""
+    path = _socket_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path):
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.connect(path)
+            return  # a live daemon already serves — we're redundant
+        except OSError:
+            os.unlink(path)  # stale socket from a dead owner — reclaim it
+        finally:
+            probe.close()
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        srv.bind(path)
+    except OSError:
+        return  # lost a bind race to another daemon
+    srv.listen(8)
+    srv.settimeout(idle_timeout)
+    try:
+        _embed_raw(["warm"])  # load the model once, here, off any hook path
+    except Exception:
+        pass
+    try:
+        while True:
+            try:
+                conn, _ = srv.accept()
+            except socket.timeout:
+                return  # idle → exit
+            with conn:
+                _serve_one(conn)
+    finally:
+        srv.close()
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def embed_texts(texts):
     cache = _load_cache()
     missing = [t for t in texts if _key(t) not in cache]
     if missing:
-        for t, v in zip(missing, _embed_raw(missing)):
+        for t, v in zip(missing, _embed(missing)):
             cache[_key(t)] = v
         _save_cache(cache)
     return [cache[_key(t)] for t in texts]

@@ -12,7 +12,7 @@ def test_report_contents(canonical_store):
     text = render(Store(canonical_store))
     assert "7 takeaways" in text and "8 firings, 5 rated" in text
     assert "1 from anonymous sessions" in text  # session_id == "unknown"
-    assert "1 mirror-back candidate(s) queued" in text
+    assert "2 general-reach (fire in every repo)" in text
     assert "t1: all rated firings were noise" in text
     assert "noise on: docs/a.md" in text
 

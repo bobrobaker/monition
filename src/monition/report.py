@@ -22,7 +22,7 @@ def render(store):
         by_status[t.status] = by_status.get(t.status, 0) + 1
     rated = sum(1 for f in firings if f.outcome is not None)
     unknown_sessions = sum(1 for f in firings if f.session_id == "unknown")
-    candidates = sum(1 for t in takeaways if t.mirror == "candidate")
+    general = sum(1 for t in takeaways if t.reach == "general")
 
     lines = [f"Takeaway store audit — {store.path}", ""]
     lines.append(
@@ -31,8 +31,8 @@ def render(store):
         + f"); {len(firings)} firings, {rated} rated"
         + (f"; {unknown_sessions} from anonymous sessions" if unknown_sessions else "")
     )
-    if candidates:
-        lines.append(f"{candidates} mirror-back candidate(s) queued")
+    if general:
+        lines.append(f"{general} general-reach (fire in every repo)")
     lines.append("")
 
     header = f"{'id':>4} {'kind':<10} {'trigger':<32} {'fires':>5} {'+':>3} {'-':>3} {'prec':>5}"

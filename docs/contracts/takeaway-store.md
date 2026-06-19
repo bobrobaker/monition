@@ -1,4 +1,4 @@
-# Data contract — Monition store (v5)
+# Data contract — Monition store (v6)
 
 This contract is the spec of the code↔data boundary: it binds the Monition module
 (the machinery) to any Monition store (the data) — a per-project store directory
@@ -7,12 +7,14 @@ containing the `takeaways`, `firings`, and `decisions` tables, addressed by path
 the module owns *how matching executes* and never reinterprets a field beyond what
 is written here.
 
-**Storage backends.** `monition init` defaults to **SQLite** (`store.db` in the store
-directory; stdlib `sqlite3`, zero install). An optional **Dolt** backend can be selected
-with `monition init --dolt`; it requires the `dolt` binary and is retained for future
-data-VCS use. Backend detection is automatic: `.dolt/` present → Dolt; `store.db` → SQLite.
-The contract is backend-agnostic; only type-family assertions differ (MySQL dialect for
-Dolt, SQLite types for SQLite).
+**Storage backends.** Two backends exist behind one seam. `monition init` defaults to
+**SQLite** (`store.db` in the store directory; stdlib `sqlite3`, zero install), which is
+the recommended default for **external / standalone hosts** that won't install dolt. For
+**our own situation the default is Dolt** (the v6 hub is a Dolt store, selected via
+`--dolt` / resolved through `MONITION_STORE`) — see
+`docs/decisions/2026-06-18-dolt-default-ours-sqlite-external.md`. Backend detection is
+automatic: `.dolt/` present → Dolt; `store.db` → SQLite. The contract is backend-agnostic;
+only type-family assertions differ (MySQL dialect for Dolt, SQLite types for SQLite).
 
 Validated against a live reference store on 2026-06-11.
 
@@ -44,15 +46,15 @@ are tolerated and ignored (the store may grow); a missing column, a renamed colu
 or an enum domain change is a contract break and requires a new version of this
 document.
 
-**v2 (2026-06-11):** the overloaded v1 `status` enum was split into two
-orthogonal axes — `status` (`active|retired`: does this row fire) and a new
-`mirror` column (`none|candidate|mirrored`: mirror-back state). A v1-dialect store
-— one whose `status` domain still contains `upstream_candidate`/`mirrored` — is
-**rejected with an explicit migrate-the-store message**, never silently coerced:
-mapping v1 statuses onto v2 axes is a migration (`monition migrate` is the repair
-path), not a reader guess. The migration maps `upstream_candidate` →
-(`active`, `candidate`) and `mirrored` → (`active`, `mirrored`); `active`/`retired`
-keep their status with `mirror = 'none'`.
+**v2 (2026-06-11, mirror axis retired at v6):** the overloaded v1 `status` enum was
+split into two orthogonal axes — `status` (`active|retired`: does this row fire) and a
+`mirror` column (`none|candidate|mirrored`: mirror-back state). The `mirror` column was
+**retired at v6** (vestigial; its "applies beyond this repo" intent is now `reach`), but
+the v1-dialect rejection still stands: a store whose `status` domain still contains
+`upstream_candidate`/`mirrored` is **rejected with an explicit migrate-the-store
+message**, never silently coerced. The migration maps `upstream_candidate` →
+(`active`, `candidate`) and `mirrored` → (`active`, `mirrored`); at v6 the `mirror` axis
+is then dropped, so that candidate/mirrored distinction does not survive into v6.
 
 **v3 (2026-06-12):** adds the `decisions` table for scored fire/suppress
 decisions (see `## decisions — per-field meaning` below). A v2 store — one missing
@@ -71,7 +73,7 @@ migrate-the-store message**; `monition migrate` is the repair path (an additive
 NULL). `monition migrate` is cumulative: it carries any older store up through
 every intermediate version to the current version.
 
-**v5 (2026-06-14, current):** adds `situation` to `firings` — a short
+**v5 (2026-06-14):** adds `situation` to `firings` — a short
 firing-grain decision-context excerpt captured at fire time (the un-truncated
 user prompt for `on_demand`, an excerpt of the content being written/edited for
 `edit_path`; NULL when the executor has none, e.g. `session_start`). The
@@ -82,6 +84,17 @@ backfill and is captured at every fire. A v4 store — one whose `firings` lacks
 `situation` — is **rejected with an explicit migrate-the-store message**;
 `monition migrate` is the repair path (an additive `ALTER TABLE firings`, leaves
 existing rows' new column NULL).
+
+**v6 (2026-06-18, current):** collapses the per-repo stores into one hub and carries
+the general/project distinction as **columns**, not physical boundaries. Adds `reach`
+(`general|project`) and `origin_repo` to `takeaways`, and `repo` to `firings`; **retires
+the `mirror` column**. `reach='general'` fires in any repo; `reach='project'` fires only
+where `origin_repo` equals the current repo root. `firings.repo` is the host repo root at
+fire time — capture-or-lose, like v4 provenance and v5 `situation`. A v5 store — one whose
+`takeaways` lacks `reach` — is **rejected with an explicit migrate-the-store message**;
+`monition migrate` is the repair path: additive `ALTER`s (backfilling `reach='project'`
+and `origin_repo`/`firings.repo` from the store's own repo root, since a per-repo store
+belongs to exactly one repo), then `DROP COLUMN mirror`.
 
 ## `takeaways` — per-field meaning
 
@@ -97,7 +110,8 @@ existing rows' new column NULL).
 | `full_content` | text, nullable | The why + workaround. Pulled on demand (`show <t-id>`); zero passive context cost. |
 | `source` | varchar, nullable | Provenance pointer (origin session/commit), attached at mining time. Never substituted or regenerated; if it's missing, it stays missing. |
 | `status` | enum `active\|retired` | Firing lifecycle only — see below. |
-| `mirror` | enum `none\|candidate\|mirrored` | Mirror-back state, orthogonal to firing — see below. |
+| `reach` | enum `general\|project` | Where the row fires — see below. `general` = any repo; `project` = only `origin_repo`. Default `project`. |
+| `origin_repo` | varchar, nullable | Absolute repo root the row belongs to (the matcher gate for `project` rows). Set to the current repo at add time; backfilled from the store's repo root at v6 migration. |
 
 ### `trigger_spec` coordinate systems
 
@@ -128,17 +142,26 @@ existing rows' new column NULL).
   is an explicit pull — no scorer gate, no session dedup (`session_id` NULL),
   firings still logged.
 
-### `status` × `mirror` — two axes, one meaning each
+### `status` and `reach` — two axes, one meaning each
 
 - `status` answers exactly one question: does this row fire. `active` is
   firing-eligible; `retired` is kept for history, never fires, and is excluded from
   precision denominators. Nothing else may influence firing eligibility.
-- `mirror` tracks mirror-back state and **never affects firing**: `none` (default),
-  `candidate` (domain-free, queued for the sweep — keeps firing locally while it
-  waits), `mirrored` (landed upstream). Any status/mirror combination is valid.
+- `reach` answers *where* an eligible row fires, never *whether*: `project` (default)
+  fires only where `origin_repo` equals the current repo root; `general` fires in every
+  repo. The matcher adds `(reach='general' OR origin_repo IS NULL OR origin_repo =
+  :current_repo)` to its WHERE clause; `current_repo` derives from the host repo root
+  (`CLAUDE_PROJECT_DIR`/git), never from the store's location (the store may be a shared
+  hub). When the caller has **no** repo context (`current_repo` NULL — only the explicit
+  pulls `cli query` / mcp `match_gotchas` without a detectable repo) the reach filter is
+  **not applied** (fail-open). A `project` row with NULL `origin_repo` is under-specified
+  and fires anywhere (same fail-open stance) — but `add` stamps the current repo and
+  migrate backfills it, so every properly-created project row carries an origin and is
+  truly isolated. Any status/reach combination is valid.
 - History note: under the v1 schema, mirror-back state lived inside `status`, and
   rows marked `upstream_candidate` or (before 2026-06-11) `mirrored` silently
-  stopped firing — firing counts from v1-era data undercount those rows.
+  stopped firing — firing counts from v1-era data undercount those rows. The `mirror`
+  column that briefly carried that state (v2–v5) was retired at v6.
 
 ## `firings` — per-field meaning
 
@@ -158,6 +181,7 @@ One row per actual disclosure.
 | `model` | varchar(64), nullable | **v4 provenance.** Model id in effect at fire time, supplied by the executor (harness state the writer can't see). NULL = not surfaced by the harness — missing data, never guessed. |
 | `monition_version` | varchar(32), nullable | **v4 provenance.** Installed monition version that logged the firing — which module build scored/disclosed it, distinct from `git_sha` (the host repo, not monition). NULL = undeterminable. |
 | `situation` | text, nullable | **v5 firing-grain context.** A short decision-context excerpt at fire time (capped ~4000 chars): `on_demand` → the un-truncated user prompt; `edit_path` → an excerpt of the content being written/edited; `session_start` → NULL (its `session_id`+`fired_at` is the only locator). Impossible to backfill. The cheap-eval pairs this with a `session_id` join to the session archive (which holds only session-grain context). NULL = the executor had no excerpt, or a pre-v5 firing. |
+| `repo` | varchar, nullable | **v6 firing-grain context.** Host repo root at fire time, derived from `CLAUDE_PROJECT_DIR`/git — never the store's location (the store may be a shared hub). Recovers per-repo precision for `general`-reach rows, which fire across repos. Capture-or-lose, like the v4/v5 dimensions. NULL = a pre-v6 firing, or backfilled from the store's repo root at migration. |
 
 All four provenance fields are **capture-time-only and impossible to backfill**;
 they are written once at fire and never regenerated. They are nullable by
@@ -228,7 +252,7 @@ definition: the CMS tier-0 payload and `monition adopt` both cite it.
 - Inside a block, header lines are `key: value` (single line, first colon
   splits, value whitespace-trimmed). Keys: `kind`, `trigger_kind`,
   `trigger_spec`, `one_liner`, `scope`, `source`. Unknown keys are tolerated
-  and ignored (the additive-column rule's mirror); non-`key: value` lines
+  and ignored (the additive-column rule's counterpart); non-`key: value` lines
   before `full_content:` are ignored as prose.
 - A line that is exactly `full_content:` switches the block to verbatim mode:
   every following line until block end is the `full_content` value
@@ -238,8 +262,8 @@ definition: the CMS tier-0 payload and `monition adopt` both cite it.
 `takeaways` field table. **Optional:** `trigger_spec` (same coordinate
 systems, same fnmatch dialect as §`trigger_spec` coordinate systems),
 `scope`, `source`, `full_content`. **Absent by design:** `id`/`created`
-(assigned at import), `status`/`mirror` (schema defaults apply:
-`active`/`none`).
+(assigned at import), `status`/`reach`/`origin_repo` (schema defaults apply:
+`active`/`project`/NULL).
 
 **Import semantics** (`monition adopt <file>`, or `monition init --adopt
 <file>` for store-creation + import): blocks are imported in file order
@@ -287,8 +311,10 @@ is the host project's concern.
 - [ ] NULL `outcome` excluded from both numerator and denominator of precision.
 - [ ] Trigger simulation reproduces fnmatch slash-crossing on a fixture
       (`payload/*` vs `payload/a/b`).
-- [ ] Only `status = 'active'` rows counted firing-eligible; `mirror` value has no
-      effect on eligibility.
+- [ ] Only `status = 'active'` rows counted firing-eligible; `reach` value has no
+      effect on eligibility (it gates *where* a row fires, not *whether*).
+- [ ] A v5 store (`takeaways` lacks `reach`) rejected with a message naming the
+      migration to v6, not a generic type mismatch.
 - [ ] A v1-dialect store (old `status` enum domain) rejected with a message naming
       the migration, not a generic type mismatch.
 - [ ] `session_id = "unknown"` bucketed separately from real sessions.

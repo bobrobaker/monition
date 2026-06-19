@@ -3,10 +3,13 @@
 The installable module that owns all takeaway machinery: store schema, hook
 executors, `init`/`sync`/`migrate`, the reader, metrics, report, and the online EV
 scorer that gates fire/suppress decisions (`monition score`, shipped Phase 3). Host projects install Monition once per machine and run
-`monition init`; data stays per-project in a **Monition store** (a SQLite database
-at the convention path `<repo-root>/monition/store.db`; `takeaways`, `firings`, and
-`decisions` tables; Dolt backend available via `--dolt` or auto-detected from
-`.dolt/`) under the contract in `docs/contracts/takeaway-store.md`. Trigger-as-data
+`monition init`; data lives in a **Monition store** (`takeaways`, `firings`, and
+`decisions` tables) under the contract in `docs/contracts/takeaway-store.md`. **Backend:
+Dolt is our own default** (the v6 hub is a Dolt store, resolved via `MONITION_STORE`);
+SQLite (`store.db` at the convention path `<repo-root>/monition/`) stays the recommended
+default only for external/standalone hosts that won't install dolt — see
+`docs/decisions/2026-06-18-dolt-default-ours-sqlite-external.md`. Detection: `.dolt/` →
+Dolt, `store.db` → SQLite. Trigger-as-data
 survives: rows own *what fires when*; the module owns *how matching executes*.
 
 Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
@@ -16,18 +19,21 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 
 - `src/monition/` — the module: store reader (the only approved reader of store
   data), metrics, report CLI, lifecycle commands, hook executors, init/sync/migrate.
-- `docs/contracts/` — the Monition-store data contract; consumers cite sections,
-  never duplicate them.
+- `docs/contracts/` — Monition's public contracts: the store-data contracts
+  (consumers cite sections, never duplicate them) and the outbound
+  `firing-observer` integration contract.
 - `docs/road.md` — phase roadmap.
 - `tests/` — pytest, including synthetic store fixtures with known ground truth.
 
 ## Context hygiene
 
-- **Docs lag code — trust the source, not the prose.** The store model is
-  mid-refactor (Dolt→SQLite default landed; general/project scoping unsettled), so
-  treat docs as an index to *where* code lives, never as ground truth for *what it
-  does*. Confirm any load-bearing claim against the source; when behavior is the
-  question, run a quick test or REPL check rather than inferring from a doc.
+- **Docs lag code — trust the source, not the prose.** The v6 store model landed
+  (general/project scoping via `reach`+`origin_repo`; `mirror` retired; backend
+  default is Dolt for us — `docs/decisions/2026-06-18-dolt-default-ours-sqlite-external.md`);
+  the per-repo→hub fold (B04) is the one piece still pending CMS's hub path. Treat docs
+  as an index to *where* code lives, never as ground truth for *what it does*. Confirm
+  any load-bearing claim against the source; when behavior is the question, run a quick
+  test or REPL check rather than inferring from a doc.
 - Grep for symbols, fields, constants, and call sites before reading any file.
 - Structure-scan before any markdown range read: `grep -n "^##" <file>.md` first, then
   bounded reads of only the needed sections. Applies to all docs, not just code.

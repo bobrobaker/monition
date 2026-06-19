@@ -80,10 +80,14 @@ def _repo_root():
 
 
 def _open_store():
+    # The store may be a shared hub ($MONITION_STORE) elsewhere; the host repo
+    # (root) is always derived from _repo_root(), independent of store location —
+    # it is what the reach filter and firing provenance key on.
     root = _repo_root()
     if not root:
         return None, None
-    return WriteStore(os.path.join(root, "monition")), root
+    store = os.environ.get("MONITION_STORE") or os.path.join(root, "monition")
+    return WriteStore(store), root
 
 
 def _session_model(data):
@@ -136,14 +140,14 @@ def _notify_observer(session, slug):
 
 
 def _disclose(store, hits, trigger_kind, session, context=None, model=None,
-              situation=None):
+              situation=None, current_repo=None):
     """Score-gate, log a firing, and format the injection line for each hit."""
     lines = []
     for h in hits:
         if not _score_takeaway(h["id"], store.path, session):
             continue
         firing = store.fire(str(h["id"]), trigger_kind, session, context, model,
-                            situation)
+                            situation, current_repo=current_repo)
         fid = (firing or "").split()[-1] if firing else "?"
         _notify_observer(session, h["one_liner"])
         lines.append(f"[t{h['id']}/f{fid}] {h['one_liner']}")
@@ -167,9 +171,10 @@ def fire_hook():
         edit = ti.get("content") or ti.get("new_string") or None
         situation = edit[:SITUATION_CHARS] if edit else None
 
-        hits = json.loads(store.match(rel, session))
+        hits = json.loads(store.match(rel, session, current_repo=repo))
         lines = _disclose(store, hits, "edit_path", session, rel,
-                          _session_model(data), situation=situation)
+                          _session_model(data), situation=situation,
+                          current_repo=repo)
         if not lines:
             return
 
@@ -187,13 +192,14 @@ def fire_hook():
 def session_brief():
     try:
         data = json.load(sys.stdin)
-        store, _ = _open_store()
+        store, repo = _open_store()
         if store is None:
             return
         session = str(data.get("session_id", "unknown"))
 
-        rows = json.loads(store.session_start(session))
-        lines = _disclose(store, rows, "session_start", session, model=_session_model(data))
+        rows = json.loads(store.session_start(session, current_repo=repo))
+        lines = _disclose(store, rows, "session_start", session,
+                          model=_session_model(data), current_repo=repo)
         if not lines:
             return
 
@@ -211,7 +217,7 @@ def session_brief():
 def prompt_hook():
     try:
         data = json.load(sys.stdin)
-        store, _ = _open_store()
+        store, repo = _open_store()
         if store is None:
             return
         prompt = (data.get("prompt") or "").strip()
@@ -219,9 +225,10 @@ def prompt_hook():
             return
         session = str(data.get("session_id", "unknown"))
 
-        hits = json.loads(store.on_demand_match(prompt, session))
+        hits = json.loads(store.on_demand_match(prompt, session, current_repo=repo))
         lines = _disclose(store, hits, "on_demand", session, prompt[:200],
-                          _session_model(data), situation=prompt[:SITUATION_CHARS])
+                          _session_model(data), situation=prompt[:SITUATION_CHARS],
+                          current_repo=repo)
         if not lines:
             return
 

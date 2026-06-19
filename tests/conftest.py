@@ -11,25 +11,24 @@ import subprocess
 
 import pytest
 
-from monition.init_sync import V5_SCHEMA_SQLITE
+from monition.init_sync import V6_SCHEMA_SQLITE
 
 # SQLite schema for test fixtures — same DDL that `monition init` uses.
-SCHEMA = V5_SCHEMA_SQLITE
+SCHEMA = V6_SCHEMA_SQLITE
 
-# Ground truth: t1 all-noise, t2 mixed, t3 never fires (and is a mirror-back
-# candidate — candidacy must not mute it), t4 fires unrated, t5 retired,
-# t6 mirrored (active, fires).
+# Ground truth: t1 all-noise, t2 mixed, t3 never fires (general reach — fires in
+# every repo), t4 fires unrated, t5 retired, t6 general reach (active, fires).
 # Decisions: d1 cold-start (ev_score NULL), d2 suppress (evidence-based, t1),
 #            d3 fire (evidence-based, t2 at precision 0.5).
 ROWS = """
-INSERT INTO takeaways (id, created, kind, trigger_kind, trigger_spec, one_liner, status, mirror) VALUES
-  (1, '2026-01-01 10:00:00', 'gotcha', 'edit_path', 'docs/*', 'all noise', 'active', 'none'),
-  (2, '2026-01-01 10:00:00', 'gotcha', 'edit_path', 'src/*,tools/*', 'mixed', 'active', 'none'),
-  (3, '2026-01-01 10:00:00', 'rule', 'edit_path', 'never/*', 'never fires', 'active', 'candidate'),
-  (4, '2026-01-01 10:00:00', 'preference', 'session_start', NULL, 'unrated', 'active', 'none'),
-  (5, '2026-01-01 10:00:00', 'gotcha', 'edit_path', 'old/*', 'retired', 'retired', 'none'),
-  (6, '2026-01-01 10:00:00', 'rule', 'session_start', NULL, 'mirrored', 'active', 'mirrored'),
-  (7, '2026-01-01 10:00:00', 'gotcha', 'on_demand', 'migration, schema', 'on_demand: migration gotcha', 'active', 'none');
+INSERT INTO takeaways (id, created, kind, trigger_kind, trigger_spec, one_liner, status, reach) VALUES
+  (1, '2026-01-01 10:00:00', 'gotcha', 'edit_path', 'docs/*', 'all noise', 'active', 'project'),
+  (2, '2026-01-01 10:00:00', 'gotcha', 'edit_path', 'src/*,tools/*', 'mixed', 'active', 'project'),
+  (3, '2026-01-01 10:00:00', 'rule', 'edit_path', 'never/*', 'never fires', 'active', 'general'),
+  (4, '2026-01-01 10:00:00', 'preference', 'session_start', NULL, 'unrated', 'active', 'project'),
+  (5, '2026-01-01 10:00:00', 'gotcha', 'edit_path', 'old/*', 'retired', 'retired', 'project'),
+  (6, '2026-01-01 10:00:00', 'rule', 'session_start', NULL, 'mirrored', 'active', 'general'),
+  (7, '2026-01-01 10:00:00', 'gotcha', 'on_demand', 'migration, schema', 'on_demand: migration gotcha', 'active', 'project');
 INSERT INTO firings (id, takeaway_id, fired_at, session_id, trigger_kind, trigger_context, outcome) VALUES
   (1, 1, '2026-01-02 10:00:00', 's1', 'edit_path', 'docs/a.md', 'noise'),
   (2, 1, '2026-01-03 10:00:00', 's2', 'edit_path', 'docs/b.md', 'noise'),

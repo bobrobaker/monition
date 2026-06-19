@@ -20,6 +20,7 @@ import subprocess
 from .hooks import guarded_hook_command
 from .storage_backends import DoltBackend, SqliteBackend, StorageBackendError, _dolt_bin
 from .store import Store, StoreContractError
+from .store_write import val
 
 VERSION = "0.3.0"
 
@@ -91,10 +92,30 @@ _FIRINGS_SITUATION_DDL = "ALTER TABLE firings ADD COLUMN situation text;"
 
 V5_SCHEMA = V4_SCHEMA + _FIRINGS_SITUATION_DDL
 
+# v6: collapse per-repo stores into one hub. `reach`+`origin_repo` carry the
+# general/project distinction as columns (no physical store boundary); `general`
+# fires anywhere, `project` only where origin_repo == current repo. `firings.repo`
+# captures the host repo at fire time (capture-or-lose, like git_sha/situation).
+# `mirror` is retired (vestigial; its "applies beyond this repo" intent is now
+# reach='general'). The ALTERs build a fresh v6 store on top of v5 (CREATE with
+# mirror, then ADD reach/origin_repo/repo and DROP mirror) and are also the
+# v5→v6 migration steps. origin_repo/repo are absolute repo roots.
+_TAKEAWAYS_REACH_DDL = (
+    "ALTER TABLE takeaways"
+    " ADD COLUMN reach enum('general','project') NOT NULL DEFAULT 'project',"
+    " ADD COLUMN origin_repo varchar(512);"
+)
+_FIRINGS_REPO_DDL = "ALTER TABLE firings ADD COLUMN repo varchar(512);"
+_TAKEAWAYS_DROP_MIRROR_DDL = "ALTER TABLE takeaways DROP COLUMN mirror;"
+
+V6_SCHEMA = (
+    V5_SCHEMA + _TAKEAWAYS_REACH_DDL + _FIRINGS_REPO_DDL + _TAKEAWAYS_DROP_MIRROR_DDL
+)
+
 # SQLite DDL — used by `monition init` (the default backend). SQLite types:
 # TEXT for varchar/datetime/enum; INTEGER for int/tinyint; NUMERIC for decimal.
 # Enum domains enforced via CHECK constraints at write time.
-V5_SCHEMA_SQLITE = """
+V6_SCHEMA_SQLITE = """
 CREATE TABLE takeaways (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created TEXT NOT NULL,
@@ -106,7 +127,8 @@ CREATE TABLE takeaways (
   full_content TEXT,
   source TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','retired')),
-  mirror TEXT NOT NULL DEFAULT 'none' CHECK(mirror IN ('none','candidate','mirrored'))
+  reach TEXT NOT NULL DEFAULT 'project' CHECK(reach IN ('general','project')),
+  origin_repo TEXT
 );
 CREATE TABLE firings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -120,7 +142,8 @@ CREATE TABLE firings (
   git_dirty INTEGER,
   model TEXT,
   monition_version TEXT,
-  situation TEXT
+  situation TEXT,
+  repo TEXT
 );
 CREATE TABLE decisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -212,8 +235,8 @@ repo) — read it before your first run in a session.
 5. Insert accepted rows (`monition add …`), then snapshot the store:
    `monition commit -m "mine: <session topic>"`.
 6. If a takeaway is domain-free enough to apply beyond this repo, add it with
-   `--mirror candidate` — the mirror-back sweep picks those up. It keeps firing
-   locally while queued; mirror state never affects firing.
+   `--reach general` — general-reach rows fire in every repo, not just this one.
+   The default `--reach project` fires only where it was authored.
 """
 
 SKILLS = {"mine-session": SKILL_MINE_SESSION}
@@ -340,15 +363,15 @@ def init(root, dry_run=False, with_dump_hook=False, dolt=False):
         def make_dolt_store():
             os.makedirs(store, exist_ok=True)
             try:
-                DoltBackend(store).init(V5_SCHEMA)
+                DoltBackend(store).init(V6_SCHEMA)
             except StorageBackendError as e:
                 raise StoreContractError(str(e)) from e
-        act(f"create Monition store at {store} (v5 schema, dolt)", make_dolt_store)
+        act(f"create Monition store at {store} (v6 schema, dolt)", make_dolt_store)
     else:
         def make_sqlite_store():
             os.makedirs(store, exist_ok=True)
-            SqliteBackend(os.path.join(store, "store.db")).init(V5_SCHEMA_SQLITE)
-        act(f"create Monition store at {store} (v5 schema, sqlite)", make_sqlite_store)
+            SqliteBackend(os.path.join(store, "store.db")).init(V6_SCHEMA_SQLITE)
+        act(f"create Monition store at {store} (v6 schema, sqlite)", make_sqlite_store)
 
     spath, settings, added = _plan_settings(root)
     if added:
@@ -432,13 +455,15 @@ def _raw_sql(store_path, query):
 
 
 def migrate(store_path):
-    """Bring a store up to the current schema (v5). Cumulative — an older store
+    """Bring a store up to the current schema (v6). Cumulative — an older store
     traverses every step it is missing:
 
     - v1 → v2: split the overloaded status domain into status + mirror axes
     - v2 → v3: add the decisions table
     - v3 → v4: add fire-time provenance columns to firings
     - v4 → v5: add the situational-excerpt column to firings
+    - v5 → v6: add reach/origin_repo to takeaways + repo to firings (backfilled
+      from this store's repo root), then retire the vestigial mirror column
     """
     if _dolt_bin() is None:
         raise StoreContractError("dolt binary not found on PATH or ~/.local/bin")
@@ -448,16 +473,20 @@ def migrate(store_path):
     firing_cols = {r["Field"] for r in _raw_sql(store_path, "DESCRIBE `firings`")}
     has_provenance = "git_sha" in firing_cols
     has_situation = "situation" in firing_cols
+    has_firing_repo = "repo" in firing_cols
     try:
         _raw_sql(store_path, "DESCRIBE `decisions`")
         decisions_exist = True
     except StoreContractError:
         decisions_exist = False
 
-    if decisions_exist and has_provenance and has_situation:
-        raise StoreContractError("store is already v5 — nothing to migrate")
-
     cols = {r["Field"]: r["Type"] for r in _raw_sql(store_path, "DESCRIBE `takeaways`")}
+    has_reach = "reach" in cols
+
+    if (decisions_exist and has_provenance and has_situation
+            and has_reach and has_firing_repo):
+        raise StoreContractError("store is already v6 — nothing to migrate")
+
     status = cols.get("status")
     if status == _V1_STATUS:
         # v1 -> v2 mapping: upstream_candidate -> (active, candidate);
@@ -489,5 +518,136 @@ def migrate(store_path):
     if not has_situation:
         _raw_sql(store_path, _FIRINGS_SITUATION_DDL)
 
+    # v5 -> v6: a per-repo store belongs to exactly one repo, so backfill
+    # origin_repo/firings.repo from the store's repo root. Additive + backfill
+    # first, then drop the vestigial mirror (checked against the LIVE column set —
+    # a v1-origin store gains mirror during v1→v2 above, so the stale pre-migration
+    # `cols` would miss it).
+    repo_root = os.path.dirname(os.path.abspath(store_path))
+    repo_sql = "'" + repo_root.replace("'", "''") + "'"
+    if not has_reach:
+        _raw_sql(store_path, _TAKEAWAYS_REACH_DDL)
+        _raw_sql(store_path, f"UPDATE takeaways SET origin_repo = {repo_sql}")
+    if not has_firing_repo:
+        _raw_sql(store_path, _FIRINGS_REPO_DDL)
+        _raw_sql(store_path, f"UPDATE firings SET repo = {repo_sql}")
+    live_cols = {r["Field"] for r in _raw_sql(store_path, "DESCRIBE `takeaways`")}
+    if "mirror" in live_cols:
+        _raw_sql(store_path, _TAKEAWAYS_DROP_MIRROR_DDL)
+
     Store(store_path)  # the reader's fingerprint check is the success gate
-    return f"migrated {store_path} to v5"
+    return f"migrated {store_path} to v6"
+
+
+# --- v6 fold: consolidate per-repo Dolt stores into the Dolt hub ----------
+
+_TAKEAWAY_COLS = ["created", "kind", "scope", "trigger_kind", "trigger_spec",
+                  "one_liner", "full_content", "source", "status", "reach", "origin_repo"]
+_FIRING_COLS = ["fired_at", "session_id", "trigger_kind", "trigger_context", "outcome",
+                "git_sha", "git_dirty", "model", "monition_version", "situation", "repo"]
+_FIRING_NUM = {"git_dirty"}
+_DECISION_COLS = ["session_id", "decided_at", "decision", "evidence_count",
+                  "cold_start", "ev_score"]
+_DECISION_NUM = {"evidence_count", "cold_start", "ev_score"}
+
+
+def _numv(v):
+    """SQL literal for a numeric/decimal column: None -> NULL (Dolt omits NULL keys
+    from JSON, so a missing key reads as None via .get), else the value verbatim."""
+    return "NULL" if v is None else str(v)
+
+
+def _max_id(path, table):
+    rows = _raw_sql(path, f"SELECT MAX(id) AS m FROM `{table}`")
+    m = rows[0].get("m") if rows else None  # empty table → MAX is NULL → omitted key
+    return int(m) if m is not None else 0
+
+
+def _count(path, table):
+    return int(_raw_sql(path, f"SELECT COUNT(*) AS n FROM `{table}`")[0]["n"])
+
+
+def _row_values(r, columns, numeric, lead):
+    """One `(...)` VALUES tuple: `lead` is the already-formatted id literals that
+    prefix the data columns (the offset id, and FK takeaway_id for child tables)."""
+    cells = list(lead)
+    for c in columns:
+        cells.append(_numv(r.get(c)) if c in numeric else val(r.get(c)))
+    return "(" + ", ".join(cells) + ")"
+
+
+def _insert_rows(path, table, full_columns, tuples, chunk=100):
+    """`full_columns` is the complete ordered column list (id + any takeaway_id FK +
+    data columns) matching each tuple produced by `_row_values`."""
+    if not tuples:
+        return
+    cols = "(" + ", ".join(full_columns) + ")"
+    for i in range(0, len(tuples), chunk):
+        batch = ", ".join(tuples[i:i + chunk])
+        _raw_sql(path, f"INSERT INTO `{table}` {cols} VALUES {batch}")
+
+
+def fold_store(source_path, hub_path):
+    """Fold a per-repo **v6** Dolt store's rows into the Dolt hub (Dolt→Dolt only).
+
+    Non-destructive to the source — it is read, never modified. The source must
+    already be v6 (run `monition migrate --store <source>` first) so reach/origin_repo
+    /firings.repo are set; the fold preserves them. Source ids are offset by the hub's
+    current MAX(id) per table so they never collide and the firings/decisions →
+    takeaways FK references stay intact. Idempotent guard: refuses if the hub already
+    holds this source's origin_repo. Conservation-checked, then the hub is committed."""
+    if _dolt_bin() is None:
+        raise StoreContractError("dolt binary not found on PATH or ~/.local/bin")
+    for label, path in (("source", source_path), ("hub", hub_path)):
+        if not os.path.isdir(os.path.join(path, ".dolt")):
+            raise StoreContractError(
+                f"{label} {path} is not a Dolt database — the fold is Dolt→Dolt only")
+
+    src_cols = {r["Field"] for r in _raw_sql(source_path, "DESCRIBE `takeaways`")}
+    if "reach" not in src_cols:
+        raise StoreContractError(
+            f"source {source_path} is not v6 (no `reach` column) — run "
+            f"`monition migrate --store {source_path}` first, then fold")
+    Store(hub_path)  # hub must pass the v6 fingerprint
+
+    origin = os.path.dirname(os.path.abspath(source_path))
+    already = int(_raw_sql(
+        hub_path, f"SELECT COUNT(*) AS n FROM takeaways WHERE origin_repo = {val(origin)}"
+    )[0]["n"])
+    if already:
+        raise StoreContractError(
+            f"hub already holds {already} row(s) for origin_repo {origin} — already "
+            "folded; refusing to double-insert")
+
+    takeaways = _raw_sql(source_path, "SELECT * FROM takeaways ORDER BY id")
+    firings = _raw_sql(source_path, "SELECT * FROM firings ORDER BY id")
+    decisions = _raw_sql(source_path, "SELECT * FROM decisions ORDER BY id")
+
+    t_base, f_base, d_base = (_max_id(hub_path, t)
+                              for t in ("takeaways", "firings", "decisions"))
+    before = tuple(_count(hub_path, t) for t in ("takeaways", "firings", "decisions"))
+
+    _insert_rows(hub_path, "takeaways", ["id"] + _TAKEAWAY_COLS, [
+        _row_values(r, _TAKEAWAY_COLS, set(), [_numv(t_base + int(r["id"]))])
+        for r in takeaways])
+    _insert_rows(hub_path, "firings", ["id", "takeaway_id"] + _FIRING_COLS, [
+        _row_values(r, _FIRING_COLS, _FIRING_NUM,
+                    [_numv(f_base + int(r["id"])), _numv(t_base + int(r["takeaway_id"]))])
+        for r in firings])
+    _insert_rows(hub_path, "decisions", ["id", "takeaway_id"] + _DECISION_COLS, [
+        _row_values(r, _DECISION_COLS, _DECISION_NUM,
+                    [_numv(d_base + int(r["id"])), _numv(t_base + int(r["takeaway_id"]))])
+        for r in decisions])
+
+    after = tuple(_count(hub_path, t) for t in ("takeaways", "firings", "decisions"))
+    expected = (before[0] + len(takeaways), before[1] + len(firings), before[2] + len(decisions))
+    if after != expected:
+        raise StoreContractError(
+            f"fold conservation failed: hub counts {after} != expected {expected} "
+            f"(source: {len(takeaways)} takeaways / {len(firings)} firings / "
+            f"{len(decisions)} decisions)")
+
+    DoltBackend(hub_path).snapshot(
+        f"fold: {origin} into hub ({len(takeaways)} takeaways, {len(firings)} firings)")
+    return (f"folded {len(takeaways)} takeaways, {len(firings)} firings, "
+            f"{len(decisions)} decisions from {source_path} into {hub_path}")

@@ -52,7 +52,7 @@ class TakeawayAudit:
     trigger_kind: str
     trigger_spec: Optional[str]
     status: str
-    mirror: str = "none"
+    reach: str = "project"
     fires: int = 0
     helpful: int = 0
     noise: int = 0
@@ -93,7 +93,7 @@ def audit(takeaways, firings):
     for t in takeaways:
         by_id[t.id] = TakeawayAudit(
             takeaway_id=t.id, kind=t.kind, trigger_kind=t.trigger_kind,
-            trigger_spec=t.trigger_spec, status=t.status, mirror=t.mirror,
+            trigger_spec=t.trigger_spec, status=t.status, reach=t.reach,
         )
     for f in firings:
         a = by_id[f.takeaway_id]

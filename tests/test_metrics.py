@@ -51,8 +51,8 @@ def test_audit_ground_truth(canonical_store):
     assert "mixed ratings" in audits[2].recommendation
 
     assert audits[3].fires == 0
-    assert "never fired" in audits[3].recommendation  # candidacy doesn't silence it
-    assert audits[3].mirror == "candidate"
+    assert "never fired" in audits[3].recommendation  # general reach doesn't silence it
+    assert audits[3].reach == "general"
 
     assert audits[4].fires == 2 and audits[4].precision is None
     assert "never rated" in audits[4].recommendation

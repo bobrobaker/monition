@@ -27,8 +27,11 @@ a refinement conversation, not enough to implement directly.
   (the "hub"), with the project/general distinction carried as columns (`reach` +
   `origin_repo`), not physical per-repo boundaries. monition resolves the store
   from `MONITION_STORE` → `<repo-root>/monition/` fallback (unset = standalone
-  mode); CMS owns the hub's location + lifecycle. Backend SQLite, default;
-  cross-machine distribution deferred to the Dolt seam. Field semantics are never
+  mode); CMS owns the hub's location + lifecycle. Backend: **Dolt is our own
+  default** (the hub is a Dolt store); SQLite stays the recommended default only
+  for external/standalone hosts that won't install dolt — see
+  `docs/decisions/2026-06-18-dolt-default-ours-sqlite-external.md`. Cross-machine
+  distribution deferred to the Dolt-server seam. Field semantics are never
   reinterpreted outside the data contract in `docs/contracts/takeaway-store.md`.
   *(Ratified via CMS confer 2026-06-18 —
   `docs/decisions/2026-06-18-single-store-general-project-scoping.md`; supersedes

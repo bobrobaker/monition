@@ -1,5 +1,11 @@
 # 2026-06-17 · Storage backend: SQLite default, Dolt optional behind a seam
 
+> **Amended 2026-06-18** by
+> [Dolt is the default for our own hub](2026-06-18-dolt-default-ours-sqlite-external.md):
+> the forker-facing half below (SQLite default for external/standalone hosts) still
+> stands, but **for our own situation the default is now Dolt** (the v6 hub is a Dolt
+> store). Read that decision for the current "which backend for us" answer.
+
 **Question.** The CMS forkable refactor makes monition ship out-of-the-box. Dolt is a
 122 MB Go binary and the #1 adoption barrier for a forker. Does monition need Dolt?
 

@@ -206,58 +206,69 @@ INSERT INTO takeaways (id, created, kind, trigger_kind, trigger_spec, one_liner,
 
 
 @dolt_only
-def test_migrate_v1_to_v5(tmp_path):
+def test_migrate_v1_to_v6(tmp_path):
     assert "upstream_candidate" in V1_SCHEMA  # the replace actually took
     store = str(tmp_path / "v1store")
     build_dolt_store(store, [V1_SCHEMA, V1_ROWS])
     with pytest.raises(StoreContractError, match="v1-dialect"):
         Store(store)
 
-    msg = migrate(store)  # cumulative: v1 -> v2 -> v3 -> v4 -> v5
-    assert "to v5" in msg
+    msg = migrate(store)  # cumulative: v1 -> v2 -> v3 -> v4 -> v5 -> v6
+    assert "to v6" in msg
 
-    s = Store(store)  # v4 fingerprint check passes post-migration
+    s = Store(store)  # v6 fingerprint check passes post-migration
     rows = {t.id: t for t in s.takeaways()}
-    assert (rows[1].status, rows[1].mirror) == ("active", "none")
-    assert (rows[2].status, rows[2].mirror) == ("active", "candidate")
-    assert (rows[3].status, rows[3].mirror) == ("active", "mirrored")
-    assert (rows[4].status, rows[4].mirror) == ("retired", "none")
+    # status split preserved; mirror retired at v6 (the candidate/mirrored
+    # distinction is dropped — uniform reach='project' backfill, origin_repo from
+    # the store's repo root).
+    assert rows[1].status == "active"
+    assert rows[2].status == "active"
+    assert rows[3].status == "active"
+    assert rows[4].status == "retired"
+    origin = os.path.dirname(os.path.abspath(store))
+    assert all(t.reach == "project" and t.origin_repo == origin for t in rows.values())
 
 
 @dolt_only
-def test_migrate_v3_to_v4_adds_provenance(tmp_path):
+def test_migrate_v3_to_v6_adds_provenance(tmp_path):
     store = str(tmp_path / "v3store")
     build_dolt_store(store, [ins.V3_SCHEMA])  # decisions present, firings lack provenance
     with pytest.raises(StoreContractError, match="upgrade to v4"):
         Store(store)
 
     msg = migrate(store)
-    assert "to v5" in msg
+    assert "to v6" in msg
 
-    s = Store(store)  # v5 fingerprint passes; provenance + situation now present
+    s = Store(store)  # v6 fingerprint passes; provenance + situation now present
     assert s.firings() == []  # empty store reads cleanly post-migration
 
 
 @dolt_only
-def test_migrate_v4_to_v5_adds_situation(tmp_path):
+def test_migrate_v4_to_v6_adds_situation(tmp_path):
     store = str(tmp_path / "v4store")
     build_dolt_store(store, [ins.V4_SCHEMA])  # provenance present, firings lack situation
     with pytest.raises(StoreContractError, match="upgrade to v5"):
         Store(store)
 
     msg = migrate(store)
-    assert "to v5" in msg
+    assert "to v6" in msg
 
-    s = Store(store)  # v5 fingerprint passes; situation column now present
+    s = Store(store)  # v6 fingerprint passes; situation column now present
     assert s.firings() == []
 
 
 @dolt_only
-def test_migrate_refuses_v5(tmp_path):
-    from .conftest import SCHEMA, ROWS
-    store = str(tmp_path / "dolt_v5")
-    build_dolt_store(store, [ins.V5_SCHEMA, ROWS])
-    with pytest.raises(StoreContractError, match="already v5"):
+def test_migrate_v5_to_v6_then_refuses(tmp_path):
+    store = str(tmp_path / "v5store")
+    build_dolt_store(store, [ins.V5_SCHEMA])  # situation present, takeaways lack reach
+    with pytest.raises(StoreContractError, match="upgrade to v6"):
+        Store(store)
+
+    msg = migrate(store)
+    assert "to v6" in msg
+    Store(store)  # v6 fingerprint passes
+
+    with pytest.raises(StoreContractError, match="already v6"):
         migrate(store)
 
 

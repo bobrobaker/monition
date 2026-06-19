@@ -15,13 +15,13 @@ from .adopt import adopt as adopt_file
 from .backends import BackendError
 from .export import export_records, render_jsonl
 from .hooks import fire_hook, prompt_hook, session_brief
-from .init_sync import init as init_repo, migrate as migrate_store, sync as sync_repo
+from .init_sync import init as init_repo, migrate as migrate_store, sync as sync_repo, fold_store
 from .replay import DEFAULT_CONDITION_CAP, DEFAULT_RUN_TIMEOUT, ReplayError, run_replay
 from .report import render, render_tune
 from .snapshot import SnapshotError, capture as capture_snapshot
 from .store import Store, StoreContractError
 from .score import score as run_score
-from .store_write import WriteStore, iid, resolve_store_path
+from .store_write import WriteStore, iid, resolve_store_path, current_repo
 
 
 def _git_root():
@@ -72,14 +72,14 @@ def _run_add(ws, args):
     if args.resolve:
         print(ws.resolve_add(args.resolve, args.kind, args.trigger_kind,
                              args.one_liner, args.trigger_spec, args.full_content,
-                             args.scope, args.source, args.mirror))
+                             args.scope, args.source, args.reach, args.origin_repo))
         return 0
     matches = ws.find_resurrection(args.one_liner, args.full_content)
     if matches:
         print(_render_resurrection(matches))
         return 3
     print(ws.add(args.kind, args.trigger_kind, args.one_liner, args.trigger_spec,
-                 args.full_content, args.scope, args.source, args.mirror))
+                 args.full_content, args.scope, args.source, args.reach, args.origin_repo))
     return 0
 
 
@@ -108,8 +108,11 @@ def main(argv=None):
     s.add_argument("--full-content")
     s.add_argument("--scope")
     s.add_argument("--source")
-    s.add_argument("--mirror", default="none",
-                   choices=["none", "candidate", "mirrored"])
+    s.add_argument("--reach", default="project",
+                   choices=["general", "project"],
+                   help="general = fires in every repo; project = only where authored")
+    s.add_argument("--origin-repo",
+                   help="absolute repo root this row belongs to (default: current repo)")
     s.add_argument("--resolve", metavar="CHOICE",
                    help="resolve a suppressed near-match: new | merge:ID | log-helpful:ID")
 
@@ -155,6 +158,12 @@ def main(argv=None):
     sub.add_parser("prompt-hook", help="UserPromptSubmit executor: stdin hook JSON")
 
     sub.add_parser("mcp-serve", help="run the MCP server (requires monition[mcp])")
+    sub.add_parser("embed-warm",
+                   help="pre-fetch the embedding model weights into the managed cache "
+                        "(off the hook path; requires monition[embed])")
+    sub.add_parser("embed-daemon",
+                   help="run the warm embedding daemon (usually lazy-spawned; opt-in "
+                        "via MONITION_EMBED_DAEMON)")
 
     s = sub.add_parser("init", help="adopt monition in a host repo (idempotent)")
     s.add_argument("--root", help="host repo root (default: git toplevel)")
@@ -172,8 +181,11 @@ def main(argv=None):
     s = sub.add_parser("sync", help="refresh hook entries + skills (hash-checked)")
     s.add_argument("--root", help="host repo root (default: git toplevel)")
 
-    s = sub.add_parser("migrate", help="migrate a store up to the current schema (v5), cumulative")
+    s = sub.add_parser("migrate", help="migrate a store up to the current schema (v6), cumulative")
     s.add_argument("--store", help="store directory (default: <repo-root>/monition/)")
+    s.add_argument("--fold-into", metavar="HUB",
+                   help="fold --store's rows into this Dolt hub (Dolt→Dolt) instead of "
+                        "migrating in place; --store must already be v6")
 
     s = sub.add_parser("score", help="score a takeaway: fire or suppress decision")
     s.add_argument("takeaway_id", help="takeaway id (numeric or tN form)")
@@ -266,7 +278,19 @@ def main(argv=None):
                 args.store or resolve_store_path(), args.file)))
             return 0
         if args.cmd == "migrate":
-            print(migrate_store(args.store or resolve_store_path()))
+            src = args.store or resolve_store_path()
+            if args.fold_into:
+                print(fold_store(src, args.fold_into))
+            else:
+                print(migrate_store(src))
+            return 0
+        if args.cmd == "embed-warm":
+            from . import embed
+            print(embed.warm())
+            return 0
+        if args.cmd == "embed-daemon":
+            from . import embed
+            embed.run_daemon()
             return 0
         if args.cmd == "score":
             path = args.store or resolve_store_path()
@@ -341,7 +365,8 @@ def main(argv=None):
                 )
             ws = WriteStore(path)
             print(ws.on_demand_match(args.query_text,
-                                     session=getattr(args, "session", None)))
+                                     session=getattr(args, "session", None),
+                                     current_repo=current_repo()))
             return 0
         if args.cmd == "report":
             print(render(Store(args.store_path)))
@@ -349,18 +374,19 @@ def main(argv=None):
             ws = _open(args)
             if args.cmd == "add":
                 return _run_add(ws, args)
+            cr = current_repo()  # host repo, independent of store location (hub-safe)
             out = {
                 "list": lambda: ws.list_rows(args.status),
                 "show": lambda: ws.show(args.id),
-                "match": lambda: ws.match(args.path, args.session),
-                "session-start": lambda: ws.session_start(args.session),
+                "match": lambda: ws.match(args.path, args.session, current_repo=cr),
+                "session-start": lambda: ws.session_start(args.session, current_repo=cr),
                 "fire": lambda: ws.fire(args.takeaway_id, args.trigger_kind,
-                                        args.session, args.context),
+                                        args.session, args.context, current_repo=cr),
                 "rate": lambda: ws.rate(args.firing_id, args.outcome),
                 "log-recurrence": lambda: "takeaway {} recurrence logged (helpful firing {})".format(
                     args.takeaway_id,
                     ws.log_recurrence(args.takeaway_id, context=args.context,
-                                      session=args.session)),
+                                      session=args.session, current_repo=cr)),
                 "retire": lambda: ws.retire(args.id),
                 "dump": lambda: ws.dump(),
                 "commit": lambda: ws.commit(args.message),

@@ -12,7 +12,7 @@ The `mcp` dependency (install via `monition[mcp]`) is imported lazily inside
 Tool errors never propagate: the handler returns a message string on any
 failure (same fail-open posture as the hooks).
 """
-from .store_write import WriteStore, resolve_store_path
+from .store_write import WriteStore, resolve_store_path, current_repo
 
 
 def match_gotchas_impl(query, store_path=None):
@@ -22,11 +22,13 @@ def match_gotchas_impl(query, store_path=None):
         path = store_path or resolve_store_path()
         if not path:
             return "No Monition store found (not in an initialized repo)."
+        repo = current_repo()
         store = WriteStore(path)
-        hits = json.loads(store.on_demand_match(query))
+        hits = json.loads(store.on_demand_match(query, current_repo=repo))
         lines = []
         for h in hits:
-            firing = store.fire(str(h["id"]), "on_demand", None, query[:200])
+            firing = store.fire(str(h["id"]), "on_demand", None, query[:200],
+                                current_repo=repo)
             fid = (firing or "").split()[-1] if firing else "?"
             lines.append(f"[t{h['id']}/f{fid}] {h['one_liner']}")
         if not lines:

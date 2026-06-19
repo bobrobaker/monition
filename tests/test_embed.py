@@ -83,7 +83,7 @@ def test_hybrid_lexical_hits_rank_first(store_copy, monkeypatch):
     """A lexical hit precedes a higher-similarity semantic-only hit."""
     ws = WriteStore(store_copy)
     ws.add("gotcha", "on_demand", "semantic only row", "kubernetes", None, None,
-           None, "none")
+           None)
     monkeypatch.setattr(me, "semantic_scores", lambda q, texts: [0.95] * len(texts))
     hits = json.loads(ws.on_demand_match("migration plan"))
     assert hits[0]["id"] == 7  # lexical hit on "migration"

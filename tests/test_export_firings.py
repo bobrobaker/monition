@@ -32,9 +32,9 @@ from .conftest import SCHEMA, build_store
 # d1 decisions row exists -- must NOT leak into the export.
 A, B, C, D = "a" * 40, "b" * 40, "c" * 40, "d" * 40
 ROWS = f"""
-INSERT INTO takeaways (id, created, kind, trigger_kind, trigger_spec, one_liner, status, mirror) VALUES
-  (1, '2026-01-01 10:00:00', 'gotcha', 'edit_path', 'src/*', 'use parametrized queries', 'active', 'none'),
-  (2, '2026-01-01 10:00:00', 'rule', 'session_start', NULL, 'follow the commit format', 'active', 'none');
+INSERT INTO takeaways (id, created, kind, trigger_kind, trigger_spec, one_liner, status, reach) VALUES
+  (1, '2026-01-01 10:00:00', 'gotcha', 'edit_path', 'src/*', 'use parametrized queries', 'active', 'project'),
+  (2, '2026-01-01 10:00:00', 'rule', 'session_start', NULL, 'follow the commit format', 'active', 'project');
 INSERT INTO firings (id, takeaway_id, fired_at, session_id, trigger_kind, trigger_context, outcome, git_sha, git_dirty, model, monition_version) VALUES
   (1, 1, '2026-02-01 10:00:00', 's1', 'edit_path', 'src/a.py', 'helpful', '{A}', 0, 'claude-opus-4-8', '0.4.0'),
   (2, 1, '2026-03-01 09:00:00', 's2', 'edit_path', 'src/b.py', 'noise', '{B}', 1, 'claude-sonnet-4-6', '0.4.0'),
