@@ -304,6 +304,20 @@ Open candidates:
   **criticality-gated fallback** (still deferred) for when traffic doesn't hand
   you the counterfactual. No contract bump (firing `trigger_kind` is free-form
   varchar). Tests: `tests/test_resurrection.py`.
+- **`dolt sql-server` write-path seam — RE-PRIORITIZED from deferred to GATING
+  (2026-06-19, confer `global-firing-wiring`, archived in the brain2 landing zone).**
+  Verified empirically: concurrent `dolt sql -q` firing writes to the single hub fail
+  `cannot update manifest: database is read only` (7/10 lost under 10-way contention) —
+  file-based Dolt serializes writes via a one-writer manifest lock. Fail-open makes it
+  lossy, not corrupting, but firings are the eval substrate. The author runs
+  routinely-many concurrent sessions on the live global hub, so this degrades capture
+  **now** — not hypothetically. The previously-deferred multi-writer `dolt sql-server`
+  path (formerly framed only as a latency remedy, §"No daemon until measured") is now the
+  **gating dependency** for (a) blanket-global firing — **held**; firing stays per-repo
+  `instrument` until this lands — and (b) the already-lossy current multi-session writes.
+  `instrument --global` ships behind it (drift-free verb, blessed but gated). monition owns
+  the write path + verb. Interim mitigation to weigh at build: bounded retry-on-lock in the
+  Dolt write path (the manifest lock is transient).
 - **B05 mcp-server — DONE (landed 2026-06-12).** `monition mcp-serve` (FastMCP via
   the `monition[mcp]` extra) exposes `match_gotchas` as an explicit pull tool, plus a
   prompt-driven `on_demand` hook; never the backbone (disclosure stays
