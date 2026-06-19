@@ -15,6 +15,7 @@ per-machine state log, the session is never blocked.
 """
 import json
 import os
+import shlex
 import subprocess
 import sys
 
@@ -25,6 +26,10 @@ from .store_write import WriteStore
 # not the full transcript (which the session_id→archive join recovers). Generous
 # enough to hold essentially any real prompt or edit excerpt.
 SITUATION_CHARS = 4000
+
+# Opt-in firing observer: a hang ceiling, not an expected latency. The session is
+# never blocked on the observer (fail-open), so this only bounds a wedged command.
+OBSERVER_TIMEOUT_S = 5
 
 
 def _log_path():
@@ -107,6 +112,29 @@ def _session_model(data):
     return None
 
 
+def _notify_observer(session, slug):
+    """Opt-in, decoupled firing observer (one call per fired takeaway, so the
+    observer's running count equals the number of firings).
+
+    Monition ships no observer. When (and only when) MONITION_FIRING_OBSERVER names
+    a command, it is invoked as `<observer> --session <session_id> --text <slug>`.
+    Absent the env var this is a no-op — the convention path of a machine-local
+    integration (e.g. the author's Claude Code statusline "⚑" widget) is never
+    hard-coded here, keeping monition distributable.
+
+    Fail-open in its own try/except: a bad command, a crash, or a hang (bounded by
+    OBSERVER_TIMEOUT_S) is logged and swallowed, never blocking or delaying the
+    firing/injection that already happened."""
+    observer = os.environ.get("MONITION_FIRING_OBSERVER")
+    if not observer:
+        return
+    try:
+        cmd = shlex.split(observer) + ["--session", str(session), "--text", str(slug)]
+        subprocess.run(cmd, capture_output=True, timeout=OBSERVER_TIMEOUT_S)
+    except Exception as e:
+        _log(f"[observer-error] {e}")
+
+
 def _disclose(store, hits, trigger_kind, session, context=None, model=None,
               situation=None):
     """Score-gate, log a firing, and format the injection line for each hit."""
@@ -117,6 +145,7 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
         firing = store.fire(str(h["id"]), trigger_kind, session, context, model,
                             situation)
         fid = (firing or "").split()[-1] if firing else "?"
+        _notify_observer(session, h["one_liner"])
         lines.append(f"[t{h['id']}/f{fid}] {h['one_liner']}")
     return lines
 
