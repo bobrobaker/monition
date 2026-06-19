@@ -165,6 +165,12 @@ def main(argv=None):
     sub.add_parser("embed-daemon",
                    help="run the warm embedding daemon (usually lazy-spawned; opt-in "
                         "via MONITION_EMBED_DAEMON)")
+    for name, help in (
+        ("sql-server-status", "report the resident dolt sql-server for a store"),
+        ("sql-server-stop", "stop the resident dolt sql-server for a store"),
+    ):
+        s = sub.add_parser(name, help=help + " (--store, else MONITION_STORE / repo convention)")
+        s.add_argument("--store", help="store directory (default: MONITION_STORE / repo convention)")
 
     s = sub.add_parser("init", help="adopt monition in a host repo (idempotent) "
                                     "= init-store <root>/monition + instrument")
@@ -321,6 +327,16 @@ def main(argv=None):
         if args.cmd == "embed-daemon":
             from . import embed
             embed.run_daemon()
+            return 0
+        if args.cmd in ("sql-server-status", "sql-server-stop"):
+            from . import dolt_server
+            path = args.store or resolve_store_path()
+            if not path:
+                raise StoreContractError(
+                    "no store path: pass --store or run inside a git repo"
+                )
+            fn = dolt_server.status if args.cmd == "sql-server-status" else dolt_server.stop
+            print(fn(path))
             return 0
         if args.cmd == "score":
             path = args.store or resolve_store_path()

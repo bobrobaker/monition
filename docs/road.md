@@ -304,20 +304,22 @@ Open candidates:
   **criticality-gated fallback** (still deferred) for when traffic doesn't hand
   you the counterfactual. No contract bump (firing `trigger_kind` is free-form
   varchar). Tests: `tests/test_resurrection.py`.
-- **`dolt sql-server` write-path seam — RE-PRIORITIZED from deferred to GATING
-  (2026-06-19, confer `global-firing-wiring`, archived in the brain2 landing zone).**
-  Verified empirically: concurrent `dolt sql -q` firing writes to the single hub fail
-  `cannot update manifest: database is read only` (7/10 lost under 10-way contention) —
-  file-based Dolt serializes writes via a one-writer manifest lock. Fail-open makes it
-  lossy, not corrupting, but firings are the eval substrate. The author runs
-  routinely-many concurrent sessions on the live global hub, so this degrades capture
-  **now** — not hypothetically. The previously-deferred multi-writer `dolt sql-server`
-  path (formerly framed only as a latency remedy, §"No daemon until measured") is now the
-  **gating dependency** for (a) blanket-global firing — **held**; firing stays per-repo
-  `instrument` until this lands — and (b) the already-lossy current multi-session writes.
-  `instrument --global` ships behind it (drift-free verb, blessed but gated). monition owns
-  the write path + verb. Interim mitigation to weigh at build: bounded retry-on-lock in the
-  Dolt write path (the manifest lock is transient).
+- **`dolt sql-server` write-path seam — DONE (landed 2026-06-19).** Concurrent
+  `dolt sql -q` firing writes to the single hub failed `cannot update manifest:
+  database is read only` (verified 8/10 lost under 10-way contention) — file-based
+  Dolt serializes writes via a one-writer manifest lock, and a bounced firing is a
+  lost eval-substrate row. **Key finding that shrank the fix:** when a
+  `dolt sql-server` runs on the store, the dolt CLI auto-detects it (via
+  `.dolt/sql-server.info`) and routes *every* `dolt sql -q` through it — so the
+  existing subprocess path becomes contention-free with **no MySQL client and no
+  retry-on-lock**. The whole fix is a lifecycle module (`src/monition/dolt_server.py`)
+  that ensures a server is running; `DoltBackend` calls `ensure_running` before each
+  `dolt sql -q` (writes *and* describes — a describe racing a spawn would else read
+  as "table missing"). Opt-in via `MONITION_SQL_SERVER` (mirrors the embed daemon;
+  default off = unchanged); auto-routing means whoever spawns it fixes the whole
+  fleet, so CMS sets it machine-wide. CLI: `sql-server-status` / `sql-server-stop`.
+  Decision: `docs/decisions/2026-06-19-dolt-sql-server-write-path.md`. Tests:
+  `tests/test_dolt_server.py`. **Unblocks** `instrument --global` (now buildable).
 - **B05 mcp-server — DONE (landed 2026-06-12).** `monition mcp-serve` (FastMCP via
   the `monition[mcp]` extra) exposes `match_gotchas` as an explicit pull tool, plus a
   prompt-driven `on_demand` hook; never the backbone (disclosure stays

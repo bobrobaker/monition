@@ -14,6 +14,8 @@ import shutil
 import sqlite3
 import subprocess
 
+from . import dolt_server
+
 
 class StorageBackendError(Exception):
     """Raised by a backend when a SQL operation fails; Store re-raises as
@@ -106,6 +108,11 @@ class DoltBackend:
         return out
 
     def execute_sql(self, sql):
+        # Opt-in (MONITION_SQL_SERVER): ensure a resident sql-server owns the store
+        # so concurrent writes serialize through it instead of contending on the
+        # manifest lock. Fail-open and a no-op when disabled — the `dolt sql -q`
+        # below auto-routes through any running server, so this needs no client.
+        dolt_server.ensure_running(self._path, _dolt_bin())
         out = subprocess.run(
             [_dolt_bin(), "sql", "-q", sql, "-r", "json"],
             cwd=self._path, capture_output=True, text=True,
@@ -117,6 +124,11 @@ class DoltBackend:
 
     def describe(self, table):
         """Returns [{Field, Type}] for each column; [] when table is missing."""
+        # Gate on the server too: describe swallows errors into [], so a describe
+        # racing a concurrent server spawn (store lock held, not yet accepting)
+        # would read as "table missing" and fail schema validation. Ensuring the
+        # server first makes every `dolt sql -q` wait for it to accept.
+        dolt_server.ensure_running(self._path, _dolt_bin())
         out = subprocess.run(
             [_dolt_bin(), "sql", "-q", f"DESCRIBE `{table}`", "-r", "json"],
             cwd=self._path, capture_output=True, text=True,
