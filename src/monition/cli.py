@@ -15,7 +15,8 @@ from .adopt import adopt as adopt_file
 from .backends import BackendError
 from .export import export_records, render_jsonl
 from .hooks import fire_hook, prompt_hook, session_brief
-from .init_sync import init as init_repo, migrate as migrate_store, sync as sync_repo, fold_store
+from .init_sync import (init as init_repo, migrate as migrate_store, sync as sync_repo,
+                        fold_store, init_store, instrument)
 from .replay import DEFAULT_CONDITION_CAP, DEFAULT_RUN_TIMEOUT, ReplayError, run_replay
 from .report import render, render_tune
 from .snapshot import SnapshotError, capture as capture_snapshot
@@ -165,7 +166,8 @@ def main(argv=None):
                    help="run the warm embedding daemon (usually lazy-spawned; opt-in "
                         "via MONITION_EMBED_DAEMON)")
 
-    s = sub.add_parser("init", help="adopt monition in a host repo (idempotent)")
+    s = sub.add_parser("init", help="adopt monition in a host repo (idempotent) "
+                                    "= init-store <root>/monition + instrument")
     s.add_argument("--root", help="host repo root (default: git toplevel)")
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--with-dump-hook", action="store_true")
@@ -173,6 +175,22 @@ def main(argv=None):
                    help="use Dolt backend instead of SQLite (requires dolt binary)")
     s.add_argument("--adopt", metavar="FILE",
                    help="import a tier-0 lessons file after init")
+
+    s = sub.add_parser("init-store",
+                       help="create a Monition store with NO instrumentation (the hub, or a standalone store)")
+    s.add_argument("store_path", help="directory for the store")
+    s.add_argument("--dolt", action="store_true",
+                   help="use the Dolt backend (requires dolt binary; default SQLite)")
+    s.add_argument("--dry-run", action="store_true")
+
+    s = sub.add_parser("instrument",
+                       help="wire monition hooks/MCP/skills into a repo + point MONITION_STORE at a store; creates NO store")
+    s.add_argument("--root", help="repo root to instrument (default: git toplevel)")
+    s.add_argument("--store",
+                   help="store to point MONITION_STORE at (a hub/external store); "
+                        "omit for the <root>/monition convention (no env written)")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--with-dump-hook", action="store_true")
 
     s = sub.add_parser("adopt", help="import a tier-0 lessons file into a store")
     s.add_argument("file")
@@ -257,6 +275,18 @@ def main(argv=None):
         from .mcp_server import serve
         return serve()
     try:
+        if args.cmd == "init-store":
+            lines = init_store(args.store_path, dolt=args.dolt, dry_run=args.dry_run)
+            print("\n".join(lines or ["no changes (store already exists)"]))
+            return 0
+        if args.cmd == "instrument":
+            root = args.root or _git_root()
+            if not root:
+                raise StoreContractError("not in a git repo: pass --root")
+            lines = instrument(root, store=args.store, dry_run=args.dry_run,
+                               with_dump_hook=args.with_dump_hook)
+            print("\n".join(lines or ["no changes"]))
+            return 0
         if args.cmd in ("init", "sync"):
             root = args.root or _git_root()
             if not root:

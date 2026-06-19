@@ -335,43 +335,68 @@ def _write(path, content):
         f.write(content)
 
 
-def init(root, dry_run=False, with_dump_hook=False, dolt=False):
-    """Returns the list of change lines (already executed unless dry_run).
-
-    `dolt=True` uses the Dolt backend (requires dolt binary); the default
-    is SQLite (stdlib, zero install).
-    """
-    changes = []
-
+def _actor(changes, dry_run):
     def act(desc, fn):
         changes.append(("would " + desc) if dry_run else desc)
         if not dry_run:
             fn()
+    return act
 
-    store = os.path.join(root, "monition")
-    dolt_store = os.path.isdir(os.path.join(store, ".dolt"))
-    sqlite_store = os.path.exists(os.path.join(store, "store.db"))
 
-    if dolt_store or sqlite_store:
-        pass  # store exists — idempotent
-    elif dolt:
+def init_store(store, dolt=False, dry_run=False):
+    """Pure store creation — the hub, or a standalone `<repo>/monition`. Touches only
+    the store dir; no instrumentation. Idempotent (a present store is a no-op).
+    `dolt=True` uses Dolt (requires the binary); default is SQLite (zero install)."""
+    changes = []
+    act = _actor(changes, dry_run)
+    if (os.path.isdir(os.path.join(store, ".dolt"))
+            or os.path.exists(os.path.join(store, "store.db"))):
+        return changes  # store exists — idempotent no-op
+    if dolt:
         if _dolt_bin() is None:
             raise StoreContractError(
                 "dolt binary not found on PATH or ~/.local/bin — install dolt "
-                "or omit --dolt to use the SQLite backend (zero install)"
-            )
-        def make_dolt_store():
+                "or omit --dolt to use the SQLite backend (zero install)")
+        def make():
             os.makedirs(store, exist_ok=True)
             try:
                 DoltBackend(store).init(V6_SCHEMA)
             except StorageBackendError as e:
                 raise StoreContractError(str(e)) from e
-        act(f"create Monition store at {store} (v6 schema, dolt)", make_dolt_store)
+        act(f"create Monition store at {store} (v6 schema, dolt)", make)
     else:
-        def make_sqlite_store():
+        def make():
             os.makedirs(store, exist_ok=True)
             SqliteBackend(os.path.join(store, "store.db")).init(V6_SCHEMA_SQLITE)
-        act(f"create Monition store at {store} (v6 schema, sqlite)", make_sqlite_store)
+        act(f"create Monition store at {store} (v6 schema, sqlite)", make)
+    return changes
+
+
+def _plan_store_env(root, store):
+    """Plan `env.MONITION_STORE` → abspath(store) in the GITIGNORED local settings
+    (`settings.local.json`), never the committed `settings.json` — baking a
+    machine-local path into the tree breaks the forkable-lock. Idempotent."""
+    path = os.path.join(root, ".claude", "settings.local.json")
+    cfg = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            cfg = json.load(f)
+    target = os.path.abspath(store)
+    env = cfg.setdefault("env", {})
+    if env.get("MONITION_STORE") == target:
+        return path, cfg, False
+    env["MONITION_STORE"] = target
+    return path, cfg, True
+
+
+def instrument(root, store=None, dry_run=False, with_dump_hook=False):
+    """Pure instrumentation: merge monition's hooks/MCP/skills into the repo at
+    `root` and, when `store` is a hub/external store (not the `<root>/monition`
+    convention), point `MONITION_STORE` at it via the gitignored local settings.
+    Creates NO store. Idempotent — merges, never clobbers foreign entries, and a
+    new `--store` re-points a clean re-join."""
+    changes = []
+    act = _actor(changes, dry_run)
 
     spath, settings, added = _plan_settings(root)
     if added:
@@ -385,14 +410,21 @@ def init(root, dry_run=False, with_dump_hook=False, dolt=False):
 
     for name, path, body, state in _plan_skills(root):
         if state in ("absent", "untouched"):
-            if state == "untouched":
-                act(f"upgrade skill {name} ({path})",
-                    lambda p=path, b=body: _write(p, _stamp(b) + b))
-            else:
-                act(f"install skill {name} ({path})",
-                    lambda p=path, b=body: _write(p, _stamp(b) + b))
+            verb = "upgrade" if state == "untouched" else "install"
+            act(f"{verb} skill {name} ({path})",
+                lambda p=path, b=body: _write(p, _stamp(b) + b))
         elif state == "edited":
             changes.append(f"WARN: skill {name} locally edited — left alone ({path})")
+
+    # Point MONITION_STORE at a hub/external store only — the <root>/monition
+    # convention resolves via the unset-MONITION_STORE fallback, so the standalone
+    # path writes no env (preserves "unset = no-hub").
+    if (store is not None
+            and os.path.abspath(store) != os.path.abspath(os.path.join(root, "monition"))):
+        lpath, lcfg, changed = _plan_store_env(root, store)
+        if changed:
+            act(f"point MONITION_STORE → {store} in {lpath}",
+                lambda: _write(lpath, json.dumps(lcfg, indent=2) + "\n"))
 
     readme = os.path.join(root, "README.md")
     if os.path.exists(readme):
@@ -418,6 +450,18 @@ def init(root, dry_run=False, with_dump_hook=False, dolt=False):
         changes.append("offer: pre-commit dump hook not installed (use "
                        f"--with-dump-hook); snippet: {DUMP_HOOK_SNIPPET.strip()}")
 
+    return changes
+
+
+def init(root, dry_run=False, with_dump_hook=False, dolt=False):
+    """Standalone/forker one-command path — the composition of `init_store` +
+    `instrument` over `<root>/monition`. Behaviour is unchanged from the
+    pre-decomposition init; unset MONITION_STORE (no env written for the convention
+    store) keeps no-hub mode."""
+    store = os.path.join(root, "monition")
+    changes = init_store(store, dolt=dolt, dry_run=dry_run)
+    changes += instrument(root, store=store, dry_run=dry_run,
+                          with_dump_hook=with_dump_hook)
     if not any(c for c in changes if not c.startswith(("offer:", "WARN:"))):
         changes.insert(0, "no changes (already initialized)")
     return changes
