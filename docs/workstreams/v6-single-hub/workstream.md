@@ -1,7 +1,7 @@
 # Workstream: v6 single-hub + global reach + semantic unblock
 
-Progress: ALL BUCKETS BUILT (B01–B05 done, 2026-06-19). Only operational step left: the real fold-everything-in run, held on CMS standing up the hub.
-Blocked: none in-code. The four-source fold-everything-in waits on CMS creating /home/bolun/projects/brain2/monition/ + signaling.
+Progress: COMPLETE (B01–B05 + fold-everything-in done, 2026-06-19). Only remaining step is CMS-owned cutover (retire the 4 per-repo stores; point host repos at the hub).
+Blocked: none.
 
 ## Objective
 
@@ -124,6 +124,13 @@ States: `next`, `active`, `blocked`, `done`, `deferred`, `later`.
   GOTCHA self-correction: my confer Turn 1 wrongly floated an XDG path (lifted from the stale
   CMS hub-location handoff) — corrected in-thread; the architectural docs (charter L44/170,
   CMS DESIGN.md) had always said the landing zone. Live instance of the archived-docs flag.
+- [2026-06-19] FOLD-EVERYTHING-IN EXECUTED + init decomposition shipped. (1) `init` decomposed
+  into `init-store` + `instrument` primitives (2026-06-19 confer + decision; committed 7c9238d).
+  (2) All four sources (CMS/Corpus/RCA/fathom) migrated v5→v6 + folded into brain2/monition;
+  conservation exact `(2,1,1)→(62,266,457)`, FK integrity + reach isolation verified, no dups.
+  DISCOVERY: the hub was already live (CMS had mined 2 general gotchas + 1 firing into it) — the
+  fold's per-source before/after conservation handled the non-empty hub cleanly. Remaining:
+  CMS-owned cutover (retire the 4 per-repo stores; point host repos at the hub). v6 workstream COMPLETE.
 - [2026-06-19] B04 DONE (verb). `monition migrate --store <source> --fold-into <hub>` —
   non-destructive Dolt→Dolt copy: requires v6 source, offset-id remap keeps FK refs intact,
   idempotency guard on origin_repo, per-table conservation check, commits the hub. 203 passed

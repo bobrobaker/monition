@@ -1,5 +1,13 @@
 # Fold-everything-in runbook (v6 hub consolidation)
 
+> **EXECUTED 2026-06-19.** All four sources migrated v5→v6 and folded into
+> `/home/bolun/projects/brain2/monition`. Conservation exact: hub `(2,1,1) → (62,266,457)`
+> (the 2/1/1 pre-existing hub-native rows preserved). Reader opens clean (FK integrity),
+> reach isolation verified, no duplicates, 4 fold commits in the hub dolt log. **Remaining:
+> Step 4 cutover (retire the 4 per-repo source stores; point host repos at the hub) — CMS-owned.**
+> The four source stores are now v6-in-place (uncommitted working set) pending CMS retirement.
+> Steps below are the procedure as run, kept for provenance / re-runs.
+
 The one operational step left in the v6 workstream: fold the four per-repo Dolt
 takeaway stores into the single Dolt hub. The verb (`monition migrate --fold-into`,
 B04) is built + tested; this is the real run. **Hard-to-reverse — runs against real
