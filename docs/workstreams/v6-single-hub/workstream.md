@@ -1,6 +1,6 @@
 # Workstream: v6 single-hub + global reach + semantic unblock
 
-Progress: COMPLETE (B01–B05 + fold-everything-in done, 2026-06-19). Only remaining step is CMS-owned cutover (retire the 4 per-repo stores; point host repos at the hub).
+Progress: COMPLETE + handed off (2026-06-19). B01–B05 + fold-everything-in done; cutover confer resolved (CMS owns/executes deletion + bootstrap rework). monition's v6 involvement is closed.
 Blocked: none.
 
 ## Objective
@@ -131,6 +131,12 @@ States: `next`, `active`, `blocked`, `done`, `deferred`, `later`.
   DISCOVERY: the hub was already live (CMS had mined 2 general gotchas + 1 firing into it) — the
   fold's per-source before/after conservation handled the non-empty hub cleanly. Remaining:
   CMS-owned cutover (retire the 4 per-repo stores; point host repos at the hub). v6 workstream COMPLETE.
+- [2026-06-19] Cutover confer RESOLVED (archived `handoffs/archive/2026-06-19-confer-v6-cutover.md`)
+  — clean handoff, nothing further needed from monition. CMS executes: delete all four per-repo
+  stores (`git rm dump.sql` + `rm -rf .dolt`; rows preserved in hub + git history), retire the
+  CMS/monition forkable reference exhibit; host repos already resolve to the hub via machine-wide
+  MONITION_STORE (no re-instrument). Sequencing: cutover now, bootstrap.sh rework next (CMS-side).
+  **monition's v6 arc is fully closed.**
 - [2026-06-19] B04 DONE (verb). `monition migrate --store <source> --fold-into <hub>` —
   non-destructive Dolt→Dolt copy: requires v6 source, offset-id remap keeps FK refs intact,
   idempotency guard on origin_repo, per-table conservation check, commits the hub. 203 passed
