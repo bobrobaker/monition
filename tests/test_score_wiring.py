@@ -53,7 +53,7 @@ def test_fire_hook_cold_start_fires(host_repo, monkeypatch):
 def test_fire_hook_suppress_silences_output(host_repo, monkeypatch):
     """score() returns suppress for all hits → no disclosure output."""
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", host_repo)
-    monkeypatch.setattr(mh, "_score", lambda tid, path, session_id=None: {
+    monkeypatch.setattr(mh, "_score", lambda tid, path, session_id=None, store=None, firings=None, defer_write=False: {
         "decision": "suppress", "cold_start": False,
         "evidence_count": 5, "ev_score": 0.0,
     })
@@ -76,7 +76,7 @@ def test_fire_hook_score_error_fires_open(host_repo, monkeypatch):
 def test_session_brief_suppress_silences_output(host_repo, monkeypatch):
     """score() suppresses all session_start rows → no disclosure output."""
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", host_repo)
-    monkeypatch.setattr(mh, "_score", lambda tid, path, session_id=None: {
+    monkeypatch.setattr(mh, "_score", lambda tid, path, session_id=None, store=None, firings=None, defer_write=False: {
         "decision": "suppress", "cold_start": False,
         "evidence_count": 5, "ev_score": 0.0,
     })
@@ -123,7 +123,7 @@ def test_observer_invoked_once_per_firing(host_repo, monkeypatch):
 def test_observer_not_invoked_on_suppress(host_repo, monkeypatch):
     """A suppressed hit is not a firing → observer not called for it."""
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", host_repo)
-    monkeypatch.setattr(mh, "_score", lambda tid, path, session_id=None: {
+    monkeypatch.setattr(mh, "_score", lambda tid, path, session_id=None, store=None, firings=None, defer_write=False: {
         "decision": "suppress", "cold_start": False,
         "evidence_count": 5, "ev_score": 0.0,
     })

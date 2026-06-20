@@ -47,17 +47,21 @@ def _log(msg):
         f.write(msg + "\n")
 
 
-def _score_takeaway(takeaway_id, store_path, session):
-    """Returns True (fire) or False (suppress). Fail-open on any error."""
+def _score_takeaway(takeaway_id, store, session, firings=None):
+    """Score one takeaway and return its decision dict, WITHOUT writing the decision
+    row (the caller batches a whole prompt's decision writes into one INSERT).
+    Returns None on error — fail-open: the caller fires and writes no decision row,
+    matching the pre-batch behavior where a score() exception persisted nothing.
+
+    Reuses the caller's open `store` so score() skips a redundant per-hit Dolt
+    open+schema-validation (~530ms each), and the caller's pre-fetched `firings`
+    so the firings table is read once per prompt, not once per hit."""
     try:
-        result = _score(takeaway_id, store_path, session_id=session)
-        if result["decision"] == "suppress":
-            _log(f"[suppress] t{takeaway_id} session={session}")
-            return False
-        return True
+        return _score(takeaway_id, store.path, session_id=session, store=store,
+                      firings=firings, defer_write=True)
     except Exception as e:
         _log(f"[score-error] t{takeaway_id}: {e}")
-        return True  # fail-open: error is not evidence of noise
+        return None  # fail-open: error is not evidence of noise
 
 
 def guarded_hook_command(subcommand):
@@ -144,14 +148,30 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
               situation=None, current_repo=None):
     """Score-gate, log a firing, and format the injection line for each hit."""
     lines = []
+    # One firings-table read per prompt, shared across every hit's score() call.
+    firings = store.firings() if hits else None
+    decisions = []  # batched to one INSERT after the loop (lever 3)
     for h in hits:
-        if not _score_takeaway(h["id"], store.path, session):
-            continue
+        result = _score_takeaway(h["id"], store, session, firings)
+        if result is not None:
+            decisions.append((h["id"], session, result["decision"],
+                              result["evidence_count"], result["cold_start"],
+                              result["ev_score"]))
+            if result["decision"] == "suppress":
+                _log(f"[suppress] t{h['id']} session={session}")
+                continue
+        # result is None → fail-open fire (no decision row); else decision == 'fire'
         firing = store.fire(str(h["id"]), trigger_kind, session, context, model,
                             situation, current_repo=current_repo)
         fid = (firing or "").split()[-1] if firing else "?"
         _notify_observer(session, h["one_liner"])
         lines.append(f"[t{h['id']}/f{fid}] {h['one_liner']}")
+    if decisions:
+        # Fail-open: the audit/EV-history write must never lose the disclosure.
+        try:
+            store.write_decisions(decisions)
+        except Exception as e:
+            _log(f"[decision-write-error] {e}")
     return lines
 
 
