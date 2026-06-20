@@ -201,12 +201,16 @@ def run_daemon(idle_timeout=DAEMON_IDLE_TIMEOUT):
 
 
 def embed_texts(texts):
+    from . import trace
     cache = _load_cache()
+    trace.mark("embed:cache_loaded")
     missing = [t for t in texts if _key(t) not in cache]
     if missing:
         for t, v in zip(missing, _embed(missing)):
             cache[_key(t)] = v
+        trace.mark(f"embed:vectorized({len(missing)} miss)")
         _save_cache(cache)
+        trace.mark("embed:cache_saved")
     return [cache[_key(t)] for t in texts]
 
 
@@ -219,6 +223,9 @@ def cosine(a, b):
 
 def semantic_scores(query, texts):
     """Cosine similarity of each text to the query, in input order."""
+    from . import trace
     vecs = embed_texts([query] + list(texts))
     q = vecs[0]
-    return [cosine(q, v) for v in vecs[1:]]
+    scores = [cosine(q, v) for v in vecs[1:]]
+    trace.mark(f"embed:cosine({len(texts)} vecs)")
+    return scores

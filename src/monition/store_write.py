@@ -212,9 +212,12 @@ class WriteStore(Store):
                        for kw in (r.get("trigger_spec") or "").split(",")
                        if kw.strip())
 
+        from . import trace
+        trace.mark("match:sql_done")
         lexical = [r for r in rows if lex_hit(r)]
         hits = [{"id": r["id"], "one_liner": r["one_liner"]} for r in lexical]
         rest = [r for r in rows if not lex_hit(r)]
+        trace.mark("match:lexical_done")
         if rest:
             # fail-open: embeddings absent/broken → lexical-only is a valid result
             try:
@@ -222,6 +225,7 @@ class WriteStore(Store):
                 texts = [f'{r["one_liner"]} {r.get("trigger_spec") or ""}'
                          for r in rest]
                 sims = embed.semantic_scores(query, texts)
+                trace.mark("match:semantic_done")
                 ranked = sorted(
                     (p for p in zip(sims, rest) if p[0] >= embed.SIM_THRESHOLD),
                     key=lambda p: p[0], reverse=True,

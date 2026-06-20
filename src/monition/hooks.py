@@ -19,6 +19,7 @@ import shlex
 import subprocess
 import sys
 
+from . import trace
 from .score import score as _score
 from .store_write import WriteStore
 
@@ -156,8 +157,11 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
 
 def fire_hook():
     try:
+        trace.mark("start")
         data = json.load(sys.stdin)
+        trace.mark("stdin_parsed")
         store, repo = _open_store()
+        trace.mark("store_opened")
         if store is None:
             return
         ti = data.get("tool_input") or {}
@@ -172,9 +176,11 @@ def fire_hook():
         situation = edit[:SITUATION_CHARS] if edit else None
 
         hits = json.loads(store.match(rel, session, current_repo=repo))
+        trace.mark("matched")
         lines = _disclose(store, hits, "edit_path", session, rel,
                           _session_model(data), situation=situation,
                           current_repo=repo)
+        trace.mark("disclosed")
         if not lines:
             return
 
@@ -187,19 +193,26 @@ def fire_hook():
             "additionalContext": msg}}))
     except Exception:
         return  # fail open
+    finally:
+        trace.report("fire-hook")
 
 
 def session_brief():
     try:
+        trace.mark("start")
         data = json.load(sys.stdin)
+        trace.mark("stdin_parsed")
         store, repo = _open_store()
+        trace.mark("store_opened")
         if store is None:
             return
         session = str(data.get("session_id", "unknown"))
 
         rows = json.loads(store.session_start(session, current_repo=repo))
+        trace.mark("matched")
         lines = _disclose(store, rows, "session_start", session,
                           model=_session_model(data), current_repo=repo)
+        trace.mark("disclosed")
         if not lines:
             return
 
@@ -212,12 +225,17 @@ def session_brief():
             "additionalContext": msg}}))
     except Exception:
         return  # fail open
+    finally:
+        trace.report("session-brief")
 
 
 def prompt_hook():
     try:
+        trace.mark("start")
         data = json.load(sys.stdin)
+        trace.mark("stdin_parsed")
         store, repo = _open_store()
+        trace.mark("store_opened")
         if store is None:
             return
         prompt = (data.get("prompt") or "").strip()
@@ -226,9 +244,11 @@ def prompt_hook():
         session = str(data.get("session_id", "unknown"))
 
         hits = json.loads(store.on_demand_match(prompt, session, current_repo=repo))
+        trace.mark("matched")
         lines = _disclose(store, hits, "on_demand", session, prompt[:200],
                           _session_model(data), situation=prompt[:SITUATION_CHARS],
                           current_repo=repo)
+        trace.mark("disclosed")
         if not lines:
             return
 
@@ -241,3 +261,5 @@ def prompt_hook():
             "additionalContext": msg}}))
     except Exception:
         return  # fail open
+    finally:
+        trace.report("prompt-hook")
