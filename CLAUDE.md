@@ -45,7 +45,12 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 
 ## Working here
 
-- Validation: `.venv/bin/pytest` (bare `pytest`/`python -m pytest` aren't on PATH)
+- Validation: `.venv/bin/pytest` (bare `pytest`/`python -m pytest` aren't on PATH).
+  Unset a shell-exported `MONITION_STORE` first (`env -u MONITION_STORE .venv/bin/pytest`)
+  — it leaks into the hook tests and causes spurious failures (the hook reads your real
+  store, emits nothing → `JSONDecodeError` on empty output). A git worktree has no `.venv`
+  (gitignored); run its tests via the parent venv:
+  `PYTHONPATH=<worktree>/src .venv/bin/python -m pytest`.
 - Pre-commit linter: ERROR blocks, WARN advises (`tools/lint.py`). Arm once on a fresh
   clone: `git config core.hooksPath .githooks`.
 - **Never codify silently.** Rule and convention changes are proposed and accepted
