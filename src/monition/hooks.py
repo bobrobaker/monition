@@ -46,10 +46,15 @@ def _log(msg):
         f.write(msg + "\n")
 
 
-def _score_takeaway(takeaway_id, store_path, session):
-    """Returns True (fire) or False (suppress). Fail-open on any error."""
+def _score_takeaway(takeaway_id, store, session, firings=None):
+    """Returns True (fire) or False (suppress). Fail-open on any error.
+
+    Reuses the caller's open `store` so score() skips a redundant per-hit Dolt
+    open+schema-validation (~530ms each), and the caller's pre-fetched `firings`
+    so the firings table is read once per prompt, not once per hit."""
     try:
-        result = _score(takeaway_id, store_path, session_id=session)
+        result = _score(takeaway_id, store.path, session_id=session, store=store,
+                        firings=firings)
         if result["decision"] == "suppress":
             _log(f"[suppress] t{takeaway_id} session={session}")
             return False
@@ -143,8 +148,10 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
               situation=None, current_repo=None):
     """Score-gate, log a firing, and format the injection line for each hit."""
     lines = []
+    # One firings-table read per prompt, shared across every hit's score() call.
+    firings = store.firings() if hits else None
     for h in hits:
-        if not _score_takeaway(h["id"], store.path, session):
+        if not _score_takeaway(h["id"], store, session, firings):
             continue
         firing = store.fire(str(h["id"]), trigger_kind, session, context, model,
                             situation, current_repo=current_repo)
