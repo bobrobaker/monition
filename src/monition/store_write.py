@@ -275,15 +275,33 @@ class WriteStore(Store):
         target = self._backend.dump(self.path)
         return f"wrote {os.path.relpath(target, os.path.dirname(self.path))}"
 
+    _DECISIONS_INSERT = (
+        "INSERT INTO decisions (takeaway_id, session_id, decided_at, decision,"
+        " evidence_count, cold_start, ev_score) VALUES "
+    )
+
+    @staticmethod
+    def _decision_values(takeaway_id, session_id, decision,
+                         evidence_count, cold_start, ev_score):
+        ev_val = val(f"{ev_score:.4f}") if ev_score is not None else "NULL"
+        return (f"({iid(takeaway_id)}, {val(session_id)}, NOW(), {val(decision)},"
+                f" {int(evidence_count)}, {1 if cold_start else 0}, {ev_val})")
+
     def write_decision(self, takeaway_id, session_id, decision,
                        evidence_count, cold_start, ev_score):
-        ev_val = val(f"{ev_score:.4f}") if ev_score is not None else "NULL"
-        self._sql(
-            "INSERT INTO decisions (takeaway_id, session_id, decided_at, decision,"
-            f" evidence_count, cold_start, ev_score) VALUES ({iid(takeaway_id)},"
-            f" {val(session_id)}, NOW(), {val(decision)}, {int(evidence_count)},"
-            f" {1 if cold_start else 0}, {ev_val})"
-        )
+        self._sql(self._DECISIONS_INSERT + self._decision_values(
+            takeaway_id, session_id, decision, evidence_count, cold_start, ev_score))
+
+    def write_decisions(self, rows):
+        """Batch-insert decision rows in ONE INSERT (one Dolt write per prompt
+        instead of one per hit). `rows`: iterable of
+        (takeaway_id, session_id, decision, evidence_count, cold_start, ev_score).
+        Identical per-row SQL to write_decision — single-sourced via _decision_values."""
+        rows = list(rows)
+        if not rows:
+            return
+        self._sql(self._DECISIONS_INSERT
+                  + ", ".join(self._decision_values(*r) for r in rows))
 
     # --- Suppression resurrection (Phase 4) ---------------------------------
     # `add` runs find_resurrection before inserting: a near-match to a row the EV
