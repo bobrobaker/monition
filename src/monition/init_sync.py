@@ -204,7 +204,7 @@ repo) — read it before your first run in a session.
 1. Review the session for lessons that are **reusable** (would recur) and
    **non-obvious** (a future session wouldn't rediscover them cheaply). Mistakes,
    gotchas, corrections, and confirmed preferences all qualify; routine work does not.
-2. **Route each candidate before drafting** (routing v1 — from CMS
+2. **Route each candidate before drafting** (routing v2 — from CMS
    `method/lesson-routing.md`; run in order, first decisive test wins; under
    uncertainty prefer the row — it is the only tier with an eval loop and it
    retires cleanly):
@@ -219,7 +219,12 @@ repo) — read it before your first run in a session.
    - *Describable trigger, no owner:* takeaway row (`monition add`) — also the
      default when evidence is thin.
    - *Every session:* a CLAUDE.md line, only if it earns being paid every
-     session forever.
+     session forever — and pick the file by scope + audience: a **project**
+     CLAUDE.md (committed, so anyone who forks the repo inherits it — no personal
+     or machine-local content) vs your **global** `~/.claude/CLAUDE.md` (personal,
+     every repo, never shipped, the only home for orientation about machinery you
+     have installed). There is no private *versioned* per-repo CLAUDE.md, so
+     repo-scoped private guidance about the machinery routes to a store row.
    - *Mechanical shadow:* checkable-and-unambiguous violations also get a linter
      check alongside whatever prose landed above; for semantic artifacts the
      host's eval suite plays that role — the lesson must pass it before consent

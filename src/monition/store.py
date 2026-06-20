@@ -198,8 +198,8 @@ class Store:
                 and takeaway_cols.get("status") == _V1_STATUS):
             raise StoreContractError(
                 "v1-dialect store: `status` still carries mirror-back state "
-                "(upstream_candidate/mirrored) — migrate the store to the v2 "
-                "schema (status active|retired + mirror column) before reading"
+                "(upstream_candidate/mirrored) — run `monition migrate` to upgrade "
+                "to the current schema before reading"
             )
         if takeaway_cols and not decisions_present:
             raise StoreContractError(
