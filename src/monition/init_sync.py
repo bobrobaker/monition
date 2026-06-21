@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 
+from ._generated_cms import METHOD_LESSON_ROUTING, SKILL_MINE_SESSION
 from .hooks import guarded_hook_command
 from .storage_backends import DoltBackend, SqliteBackend, StorageBackendError, _dolt_bin
 from .store import Store, StoreContractError
@@ -161,107 +162,18 @@ _V1_STATUS = "enum('active','retired','upstream_candidate','mirrored')"
 _V2_STATUS = "enum('active','retired')"
 
 # Routing-tests version mirrored from CMS method/lesson-routing.md. The
-# `routing v{N}` label embedded in SKILL_MINE_SESSION must equal this; a test
-# enforces it so the hand-typed label can't silently drift (see the v1/v2 mix-up
-# that motivated this guard). Bump both together when re-stripping a CMS change.
+# `**Version:** routing v{N}` header in the bundled METHOD_LESSON_ROUTING doc must
+# equal this; a test enforces it so the human-readable legend can't drift from the
+# generated content (see the v1/v2 mix-up that motivated this guard). Bump when
+# re-stripping a CMS routing change, alongside re-running tools/regen_from_cms.py.
 ROUTING_VERSION = 3
 
-SKILL_MINE_SESSION = """\
----
-name: mine-session
-description: End-of-session mining pass — review this session for reusable lessons and house them in the Monition store with explicit triggers. Use when the user invokes /mine-session, says "mine this session" / "save the takeaways", or is wrapping up a session that hit gotchas worth keeping. NOT for mid-session one-offs the user wants codified immediately.
----
-
-# mine-session
-
-You are mining this session for takeaways. The store's semantics live in the
-Monition store contract (`docs/contracts/takeaway-store.md` in the monition
-repo) — read it before your first run in a session.
-
-0. **Rate what fired (the eval pass) — run this first, before mining.** The store's
-   fire/suppress gate trains on rated firings, and fire-time rating collects ~none (a
-   session mid-task won't stop to grade an injection). So rate here, **warm**, with the
-   session still in context — LLM-auto, evidence-gated, bulk-confirmed.
-   - **Pull the worklist, highest-value first:**
-     `monition export-firings --unrated-only --session "$CLAUDE_CODE_SESSION_ID" --order-by priority`.
-     `--order-by priority` ranks by `rating_priority` (traffic × distance-to-fire/suppress
-     boundary; cold-start rows rank high) — monition owns the math, you only consume the
-     order. If `$CLAUDE_CODE_SESSION_ID` is unset, scope with `--since <today>` instead.
-     **Fail open:** if the `monition` CLI or live store is absent, skip the pass entirely.
-   - **Walk the top N** (a budget — ~15; head, not tail; stop when `rating_priority` drops
-     off or evidence runs out). For each firing, look in the session for evidence the
-     injected `one_liner` (it fired at `trigger_context` / `situation`) actually mattered:
-     it **changed an action**, was **visibly ignored**, or was **contradicted** by what
-     you did.
-   - **Propose a rating ONLY where the session evidences it**, with a mandatory one-line
-     citation of *what in this session* shows it. **No evidence → no rating** — never pad
-     to hit coverage; an unsupported `helpful` is directional bias in the eval set, worse
-     than a label missing at random. (A cold mine — rating a session you didn't live
-     through — evidences little and correctly proposes ~0.)
-   - **Present ONE batch for bulk confirm:** all proposed ratings at once, each line
-     `<firing_id> helpful|noise — <one-line evidence>`; the user accepts the batch in a
-     single gesture with per-line veto/flip. A rating is reversible eval data, so this is
-     a **lighter gate** than proposing a new row.
-   - **Apply the accepted lines:** `monition rate <firing_id> helpful|noise` for each.
-     These ride into the `monition commit` at step 5.
-
-   Then mine for new lessons:
-
-1. Review the session for lessons that are **reusable** (would recur) and
-   **non-obvious** (a future session wouldn't rediscover them cheaply). Mistakes,
-   gotchas, corrections, and confirmed preferences all qualify; routine work does not.
-2. **Route each candidate before drafting** (routing v3 — from CMS
-   `method/lesson-routing.md`; run in order, first decisive test wins; under
-   uncertainty prefer the row — it is the only tier with an eval loop and it
-   retires cleanly).
-
-   **Precondition — the home must re-inject when S recurs.** A lesson is
-   *captured* only if its destination is reloaded into context the next time S
-   happens: a row fires via its hook, a CLAUDE.md line loads every session, a
-   skill or referenced doc is read when that task runs, a linter runs at commit.
-   A home that is **not** reloaded at S does not capture the lesson however well
-   it's written — most commonly a **commit message** (or a one-off doc nobody
-   reopens), invisible until deliberate git archaeology. "It's in the commit" is
-   not capture. Reject a non-re-injecting home and fall to the next decisive
-   test; prefer a row when nothing re-injecting fits.
-
-   - *Behavior test:* can't state it as "in situation S, do/avoid X" with a
-     nameable S → not routable; leave it in session notes.
-   - *Owning surface:* an artifact that already fires at S (a skill that runs
-     then, a hook on that event, a prompt for that task, a linter on those files,
-     or a governance surface named in this repo's CLAUDE.md) gets the edit
-     directly — a parallel row duplicates its trigger with worse precision.
-     Procedure changes always land here. Destinations with their own admission
-     rules keep them.
-   - *Describable trigger, no owner:* takeaway row (`monition add`) — also the
-     default when evidence is thin.
-   - *Every session:* a CLAUDE.md line, only if it earns being paid every
-     session forever — and pick the file by scope + audience: a **project**
-     CLAUDE.md (committed, so anyone who forks the repo inherits it — no personal
-     or machine-local content) vs your **global** `~/.claude/CLAUDE.md` (personal,
-     every repo, never shipped, the only home for orientation about machinery you
-     have installed). There is no private *versioned* per-repo CLAUDE.md, so
-     repo-scoped private guidance about the machinery routes to a store row.
-   - *Mechanical shadow:* checkable-and-unambiguous violations also get a linter
-     check alongside whatever prose landed above; for semantic artifacts the
-     host's eval suite plays that role — the lesson must pass it before consent
-     closes.
-
-   Every landing goes through the consent gate; the proposal names the deciding test.
-3. For each candidate routed to a row, draft the full row: `kind`
-   (gotcha/rule/preference), `trigger_kind` + `trigger_spec` (*when should this
-   fire?* — the design decision; edit_path glob, session_start, or on_demand),
-   `one_liner` (what gets injected — make it a trap-warning, not a description),
-   `full_content` (the why + the workaround), `source` (session/commit).
-4. **Show the proposed landings and get acceptance before applying** (consent gate).
-5. Insert accepted rows (`monition add …`), then snapshot the store:
-   `monition commit -m "mine: <session topic>"`.
-6. If a takeaway is domain-free enough to apply beyond this repo, add it with
-   `--reach general` — general-reach rows fire in every repo, not just this one.
-   The default `--reach project` fires only where it was authored.
-"""
+# SKILL_MINE_SESSION and METHOD_LESSON_ROUTING are GENERATED from CMS canonical by
+# tools/regen_from_cms.py and imported at the top of this module — do not hand-edit;
+# edit the CMS sources and re-run regen.
 
 SKILLS = {"mine-session": SKILL_MINE_SESSION}
+DOCS = {"method/lesson-routing.md": METHOD_LESSON_ROUTING}
 
 README_LINE = (
     "Takeaway capture/disclosure via [Monition](https://github.com/bobrobaker/monition): "
@@ -273,16 +185,19 @@ DUMP_HOOK_SNIPPET = (
     "monition dump >/dev/null && git add monition/dump.sql || true\n"
 )
 
-_STAMP_RE = re.compile(r"^<!-- monition-skill v(\S+) sha256:([0-9a-f]{64}) -->\n")
+_STAMP_RE = re.compile(r"^<!-- monition-(?:skill|doc) v(\S+) sha256:([0-9a-f]{64}) -->\n")
 
 
-def _stamp(body):
+def _stamp(body, kind="skill"):
     digest = hashlib.sha256(body.encode()).hexdigest()
-    return f"<!-- monition-skill v{VERSION} sha256:{digest} -->\n"
+    return f"<!-- monition-{kind} v{VERSION} sha256:{digest} -->\n"
 
 
-def _skill_state(path, body):
-    """One of: absent, untouched (stamp matches content), edited, current."""
+def _managed_state(path, body):
+    """One of: absent, untouched (stamp matches content), edited, current.
+
+    Shared by packaged skills and bundled docs — both carry a stamp comment and
+    follow the same untouched→upgrade / edited→leave hash-check."""
     if not os.path.exists(path):
         return "absent"
     with open(path) as f:
@@ -348,7 +263,15 @@ def _plan_skills(root):
     """Yields (name, path, body, state) for each packaged skill."""
     for name, body in SKILLS.items():
         path = os.path.join(root, ".claude", "skills", name, "SKILL.md")
-        yield name, path, body, _skill_state(path, body)
+        yield name, path, body, _managed_state(path, body)
+
+
+def _plan_docs(root):
+    """Yields (relpath, path, body, state) for each bundled doc — same stamp /
+    hash-check contract as skills, written under <root>/<relpath>."""
+    for relpath, body in DOCS.items():
+        path = os.path.join(root, *relpath.split("/"))
+        yield relpath, path, body, _managed_state(path, body)
 
 
 def _write(path, content):
@@ -438,6 +361,14 @@ def instrument(root, store=None, dry_run=False, with_dump_hook=False):
         elif state == "edited":
             changes.append(f"WARN: skill {name} locally edited — left alone ({path})")
 
+    for relpath, path, body, state in _plan_docs(root):
+        if state in ("absent", "untouched"):
+            verb = "upgrade" if state == "untouched" else "install"
+            act(f"{verb} doc {relpath} ({path})",
+                lambda p=path, b=body: _write(p, _stamp(b, "doc") + b))
+        elif state == "edited":
+            changes.append(f"WARN: doc {relpath} locally edited — left alone ({path})")
+
     # Point MONITION_STORE at a hub/external store only — the <root>/monition
     # convention resolves via the unset-MONITION_STORE fallback, so the standalone
     # path writes no env (preserves "unset = no-hub").
@@ -506,6 +437,12 @@ def sync(root):
             changes.append(f"{'installed' if state == 'absent' else 'upgraded'} skill {name}")
         elif state == "edited":
             changes.append(f"WARN: skill {name} locally edited — left alone ({path})")
+    for relpath, path, body, state in _plan_docs(root):
+        if state in ("absent", "untouched"):
+            _write(path, _stamp(body, "doc") + body)
+            changes.append(f"{'installed' if state == 'absent' else 'upgraded'} doc {relpath}")
+        elif state == "edited":
+            changes.append(f"WARN: doc {relpath} locally edited — left alone ({path})")
     if not changes:
         changes.append("no changes (everything current)")
     return changes

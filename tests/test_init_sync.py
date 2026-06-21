@@ -190,39 +190,77 @@ def test_sync_upgrades_untouched_warns_on_edited(host):
     assert open(spath).read() == before
 
 
+def test_sync_ships_bundled_doc(host):
+    """The bundled method/lesson-routing.md follows the same stamp + hash-check
+    contract as skills: installed on init, upgraded when untouched, left with a
+    WARN when locally edited."""
+    init(host)
+    doc = os.path.join(host, "method", "lesson-routing.md")
+    with open(doc) as f:
+        content = f.read()
+    assert ins._STAMP_RE.match(content)
+    assert "Lesson routing" in content  # the bundled doc body shipped
+
+    # untouched: an older generation re-stamped onto a different body -> upgrade
+    old_body = "# old routing doc\n"
+    with open(doc, "w") as f:
+        f.write(ins._stamp(old_body, "doc") + old_body)
+    changes = sync(host)
+    assert any(c.startswith("upgraded doc method/lesson-routing.md") for c in changes)
+    assert "Lesson routing" in open(doc).read()
+
+    # edited: body no longer matches its stamp -> WARN-and-leave
+    with open(doc, "a") as f:
+        f.write("\nlocal note\n")
+    edited = open(doc).read()
+    changes = sync(host)
+    assert any(c.startswith("WARN: doc method/lesson-routing.md locally edited") for c in changes)
+    assert open(doc).read() == edited
+
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def test_routing_label_matches_routing_version():
-    """The hand-typed `routing vN` label in the mine-session template must equal
-    ROUTING_VERSION, so the label can't silently drift from the mirrored CMS
-    routing-tests version (the v1/v2 mix-up this guard prevents)."""
-    labels = re.findall(r"routing v(\d+)", ins.SKILL_MINE_SESSION)
-    assert labels, "no `routing vN` label found in SKILL_MINE_SESSION"
-    assert all(int(n) == ins.ROUTING_VERSION for n in labels), (
-        f"label(s) {labels} != ROUTING_VERSION {ins.ROUTING_VERSION} — "
-        "bump both together when re-stripping a CMS routing change"
-    )
-
-
-def _cms_routing_doc():
-    """Path to CMS's canonical lesson-routing.md, or None when CMS isn't present
-    (forks / CI). Honors $CMS_ROOT, else the dev-machine ~/projects/CMS."""
-    root = os.environ.get("CMS_ROOT") or os.path.expanduser("~/projects/CMS")
-    doc = os.path.join(root, "method", "lesson-routing.md")
-    return doc if os.path.exists(doc) else None
-
-
-@pytest.mark.skipif(_cms_routing_doc() is None, reason="CMS not present (fork/CI)")
-def test_routing_version_matches_cms_canonical():
-    """Dev-only parity guard: when CMS is on this machine, monition's mirrored
-    ROUTING_VERSION must match CMS canonical's `**Version:** routing vN` header,
-    so a CMS bump that wasn't re-stripped into monition is caught at authoring
-    time (the silent CMS->monition handoff). No-ops on forks/CI (skipped)."""
-    text = open(_cms_routing_doc()).read()
-    m = re.search(r"\*\*Version:\*\*\s*routing v(\d+)", text)
-    assert m, "could not parse `**Version:** routing vN` header in CMS lesson-routing.md"
+    """ROUTING_VERSION (the human-readable legend in init_sync) must equal the
+    `**Version:** routing vN` header of the bundled METHOD_LESSON_ROUTING doc, so
+    the constant can't drift from the generated content. Always-on — runs on
+    forks/CI too, since it reads only committed monition state."""
+    m = re.search(r"(?m)^\*\*Version:\*\* routing v(\d+)", ins.METHOD_LESSON_ROUTING)
+    assert m, "no `**Version:** routing vN` header in METHOD_LESSON_ROUTING"
     assert int(m.group(1)) == ins.ROUTING_VERSION, (
-        f"CMS canonical is routing v{m.group(1)} but monition ROUTING_VERSION is "
-        f"{ins.ROUTING_VERSION} — re-strip CMS lesson-routing.md into SKILL_MINE_SESSION"
+        f"doc header is routing v{m.group(1)} but ROUTING_VERSION is "
+        f"{ins.ROUTING_VERSION} — bump ROUTING_VERSION when re-running regen"
     )
+
+
+def _load_regen():
+    """Import tools/regen_from_cms.py by path (tools/ isn't a package)."""
+    import importlib.util
+    path = os.path.join(_REPO_ROOT, "tools", "regen_from_cms.py")
+    spec = importlib.util.spec_from_file_location("regen_from_cms", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_regen = _load_regen()
+
+
+@pytest.mark.skipif(not os.path.isdir(_regen.cms_root()), reason="CMS not present (fork/CI)")
+def test_generated_matches_cms_regen():
+    """Dev-only anti-drift guarantee: re-run the CMS->monition transform in memory
+    and assert it byte-matches the committed generated constants. When CMS is on
+    this machine, an un-regenerated edit to CMS canonical (skill, fork-overrides,
+    or lesson-routing.md) fails here. Subsumes the old CMS-version parity check:
+    METHOD_LESSON_ROUTING is the verbatim CMS doc, so matching it == matching the
+    CMS `**Version:** routing vN` header, which the label test ties to
+    ROUTING_VERSION. No-ops on forks/CI (skipped)."""
+    consts = _regen.build()
+    assert consts["SKILL_MINE_SESSION"] == ins.SKILL_MINE_SESSION, (
+        "SKILL_MINE_SESSION is stale — run `python tools/regen_from_cms.py`")
+    assert consts["METHOD_LESSON_ROUTING"] == ins.METHOD_LESSON_ROUTING, (
+        "METHOD_LESSON_ROUTING is stale — run `python tools/regen_from_cms.py`")
 
 
 V1_SCHEMA = ins.V2_SCHEMA.replace(  # V1 uses the v2 base (no decisions)
