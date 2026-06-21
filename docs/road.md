@@ -213,11 +213,33 @@ query only — never the backbone).
 
 ---
 
-### Next
+### Phase 5 — Trigger/Filter refinement (the relevance cascade)
 
 `<----- Ongoing phase ----->`
 
-No ongoing phase. Phase 4 exited 2026-06-12; the next phase is undefined.
+**Status:** active 2026-06-21 (`docs/workstreams/relevance-cascade/`, B01–B05).
+
+**Deliverable:** reduce `on_demand` firing noise (the dominant noise source) with a
+cost-ordered, certainty-gated **cascade** of relevance Layers on the *passive* fire
+path. The decisive layer `L2′` is a learned head over full prompt⊕row embeddings —
+spike-validated at 0.78 grouped-CV AUC vs cosine 0.63, no inline LLM (the LLM is an
+offline label oracle only). Grounded:
+`docs/decisions/2026-06-18-noise-targets-the-filter-not-the-gate.md` (Update —
+2026-06-21); spike branch `spike/relevance-cascade`. Contract:
+`docs/contracts/relevance-cascade.md`.
+
+**Exit (gated):** the head must clear a usefulness bar on the **human-only** test
+split (B02 GO/NO-GO) before runtime integration. On pass — the cascade gates the
+passive `on_demand` path at a chosen operating point with measured noise reduction
+versus the always-fire baseline, explicit pulls left ungated. On fail — the phase
+pauses/closes with the finding recorded; no integration on an unproven head.
+
+---
+
+### Next
+
+Phase 5 (above) is the ongoing phase, dispatched 2026-06-21. Phase 4 exited
+2026-06-12.
 
 **Rating-collection discipline — confer resolved 2026-06-17 (CMS owns the discipline; monition the substrate).** The fire/suppress gate (`monition score`) was starved — 0 ratings collected organically (the fire-time `rate:` hint never fires), CMS store 33% rated, host repos 0%. Resolution: CMS owns an **evidence-gated** rating pass in `mine-session` (LLM-auto; rate only firings the in-context session evidences, mandatory per-rating citation, no-evidence→no-rating; head-not-tail policy; one batched lighter-than-rows consent gate). Canonical in CMS; domain-stripped mirror in monition's `SKILL_MINE_SESSION`, propagated to **adopted** repos via `monition sync` (verified: sync materializes skills full-text + stamp hash-check). Tier-0 untouched. **monition obligations:** (done 2026-06-17) `export-firings --unrated-only`/`--session`; head-not-tail metric on `export-firings` — per-row `fire_count`/`rated_count`/`precision`/`rating_priority` + `--order-by priority` (boundary math in `export.py`, `rating_priority = fire_count × closeness`, closeness `1.0` for cold-start else peaks at `EV_THRESHOLD`); (follow-up, unbuilt) fold CMS's handed-off template into `SKILL_MINE_SESSION` + bump `VERSION`; trigger `monition sync` across adopted repos once the template lands.
 

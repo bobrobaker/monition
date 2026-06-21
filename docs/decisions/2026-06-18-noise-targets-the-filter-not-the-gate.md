@@ -1,6 +1,11 @@
 # 2026-06-18 · A noise rating targets the Filter, not the Gate
 
 **Status.** Design **direction**, investigation-grounded, **not implemented**.
+**Amended 2026-06-20** (audit-grounded): the deferred layer-set question is now
+resolved and the first-line lever is reframed — see *Update — 2026-06-20* at end.
+**Amended 2026-06-21** (spike-validated): the 06-20 cheap-signal reframe is itself
+superseded — a worktree spike refuted threshold/metaness filtering and validated a
+learned embedding relevance head; see *Update — 2026-06-21* at end.
 Project-internal (pure machinery — no cross-repo confer; the row-firing pipeline is
 monition's). Partially revisits the EV-gate design (`score.py`); does not delete it.
 Surfaced as a parked direction in the semantic-daemon session and promoted here so
@@ -128,3 +133,130 @@ failure mode is silent loss: you lose the row in X to punish its noise in Y.
   same gate as the sibling daemon decision).
 - Re-examine Option B (per-context Gate) once per-context rated volume is real; it
   may graduate from "rejected as first-line" to "a refinement within the Gate."
+
+## Update — 2026-06-20 (audit-grounded)
+
+The "wait for data" anti-goal has lapsed and the deferred layer-set question is
+answered by an audit of the live hub (`monition report` over the v6 hub). The core
+decision (Filter not Gate) stands; what changes is **which Filter layer is
+first-line**.
+
+**Data gate satisfied.** At write-time there were ~4 ratings; the anti-goal blocked
+build until the ≥10-rated `tune` gate. The hub now holds **136 rated firings (66
+helpful / 70 noise)**, and every noise firing carries `trigger_context`
+(`store.py:135`). The blocker is gone — proceeded to audit, not build.
+
+**Finding 1 — the noise is `on_demand` and *cross-row*, not per-row.** 54 of ~70
+rated noise firings are on `on_demand` rows (`edit_path` noise is ~16 and mostly a
+clean glob fix, e.g. t8: drop `.claude/*`, keep `tools/takeaway*.py`). The
+`on_demand` noise concentrates on a few recurring **meta-prompts** — the user musing
+about / asking about the system itself — each lighting up a *band* of rows at once.
+Measured: `"When I ask you to help make a decision… you pull from your knowledge
+vault"` = 0 helpful / 5 noise across 5 rows; `"Read the recent refactor notes…
+/catch-me-up on support structures"` lit **19 rows**. The semantic Filter
+(`store_write.on_demand_match:159`) treats reflective talk-about-the-system as a work
+context and matches a whole class of system-rows.
+
+**Finding 2 — the meta-prompt class is *not* cleanly droppable** (the global-prefilter
+trap, verified against the helpful side). `"Read the recent refactor notes…"` is **5
+helpful / 4 noise**: helpful on orientation / handoff / decision-helper rows, noise on
+narrow technical-gotcha rows. The *same prompt* is right for one row and wrong for
+another — so there is no binary "suppress `on_demand` on meta-prompts." This is the
+decision's own anti-conflation, now at *prompt* granularity: the signal is
+prompt × row, not prompt alone.
+
+**Reframe — the first-line layer is cross-cutting, not per-row `trigger_spec`.**
+Because one prompt fires 5–19 rows, narrowing each row's `trigger_spec`
+independently (the originally-implied fix) is the wrong primary tool: it hand-edits
+dozens of rows to fight a handful of prompts, and the per-row noise stats are
+confounded by the shared cause. The first-line Filter layer is **row-breadth ×
+prompt-specificity**: narrow technical-gotcha rows must clear a *higher match bar* so
+they stop matching broad meta-prompts, while orientation/handoff rows stay loose.
+Per-row `trigger_spec` narrowing is **demoted to a cleanup tool** for the ~2 cleanly
+separable `edit_path` cases.
+
+**Consequences for the options.** This pulls the design *toward* Option B's spirit —
+the discriminator is a prompt × row interaction, not a static glob in `trigger_spec`
+— without adopting B's per-context EV overlay. Re-examine B's graduation once the
+breadth layer is specified. The Gate (`score.py`) stays last-resort; note it already
+removes **51.6% of noise vs always-fire**, so its job here is unchanged. **Before
+suppressing any of the ~17 `on_demand` "noise-everywhere" rows, apply the breadth
+layer and re-measure** — most are narrow rows misfiring on meta-prompts and may clear
+without retirement.
+
+**Open for the first implementation bucket.** (1) How to encode "row breadth class" —
+an explicit field, inferred from `trigger_spec` specificity, or learned from the
+helpful/noise context spread `metrics.audit()` already computes
+(`metrics.py:101-108`)? (2) The match-bar mechanism — a per-class cosine threshold in
+`on_demand_match` vs a prompt-intent classifier on the hook path (the latter leans on
+the warm-embedding daemon, `embed.py`). That is the layer's design question, now
+concrete enough to dispatch.
+
+## Update — 2026-06-21 (spike-validated)
+
+A throwaway worktree spike (`spike/relevance-cascade`) built the structure and replayed
+it against the **102 rated `on_demand` firings** from the live hub. It **supersedes the
+06-20 per-kind-threshold / breadth-class framing**: those directions were tested and
+refuted; a learned embedding head was validated. The core decision (Filter not Gate)
+still stands.
+
+**What was built (durable artifacts):**
+
+- **The Layer concept** — a relevance estimator with a known *cost*:
+  `evaluate(context, candidates) → {id: (category, certainty)}`, with `ABSTAIN`
+  first-class. Per-prompt gates are the uniform-verdict special case.
+- **A cost-ordered, certainty-gated cascade orchestrator** — runs layers cheapest-first
+  on the *unsettled* residual; stops at `TARGET_CERTAINTY` or a `TIME_BUDGET`
+  (= fraction × hook window). Pre-emptive budget check; fail-closed-on-firing at commit.
+- **`layer_eval` — the "should this layer earn a place?" harness.** Consumes Layer
+  objects + labeled firings; reports marginal AUC, redundancy, and **conditional lift**
+  (separation a layer adds *given the rest*) via a CV'd combiner. This is the
+  "add a layer → recommend from data" tool the workstream needs.
+
+**Findings (AUC vs human helpful/noise, n=102):**
+
+1. **Cheap scalar signals are refuted as the fix.** lexical 0.55, admissibility 0.53,
+   cosine 0.63, metaness-match 0.64 — and an optimal *correlation-aware* combiner of all
+   cheap signals reaches only ~0.61. No threshold/gate on these separates without losing
+   ~half the helpful firings (blocking 38 noise costs 25 of 48 helpful).
+2. **The discriminator is a (prompt × row) comprehension judgment** — deterministic
+   (0 within-cell label conflicts) but *pairwise*: 8 prompts are helpful for one row and
+   noise for another. So a prompt-only meta-gate has a hard ceiling.
+3. **The metaness-match hypothesis is real but insufficient.** P(noise | metaness-mismatch)
+   = 70% vs 45% on match — a genuine, *decorrelated* signal, but as a gate it costs ⅓ of
+   helpful and adds ~0 conditional lift. The binary meta/work axis can't do *within-class*
+   selection.
+4. **The signal is in the embeddings.** A learned head over the **full** embedding vectors
+   (not the cosine scalar) reaches **0.78 grouped-CV AUC** (whole-prompt holdout —
+   leakage-free), matching an offline LLM comprehension judge (0.78) and far above cosine
+   (0.63). Cosine was discarding the signal by collapsing 384 dims to one number.
+
+**What stands → the lever.** Replace raw-cosine `L2` with **`L2′` — a learned relevance
+head over the (prompt, row) embeddings**, trained on accumulated labels. Same hot-path
+cost as today's semantic match (one embedding per prompt) + a microsecond head;
+**no inline LLM in production.** The LLM's role is the *offline oracle* (generate extra
+training labels) plus validation — never on the hook path. The cascade reduces to
+**L0 (admissibility) → L2′ (learned relevance)**; the Gate (`score.py`) stays last-resort.
+
+**Lessons recorded:**
+
+- **Layer recommendation must be calibration-invariant** — rank-normalize signals
+  (Spearman + logistic-on-ranks) before correlation/lift, else the harness grades a
+  layer's arbitrary certainty curve, not its information. (This flipped a redundant↔keep
+  verdict mid-spike.)
+- **LLM-as-oracle ≠ LLM-as-inline-component** — an LLM that labels data to train a cheap
+  shippable filter is architecturally opposite to one that runs per request; the hot-path
+  cost constraint makes the former the goal here.
+
+**Caveats / path to production (NOT yet shippable):**
+
+- The head **overfits at n=102** (train AUC 1.00); 0.78 carries ±~0.05 error bars.
+  *Firm up with more labels* — rate more firings and/or expand via the offline oracle —
+  before trusting the number or training a production head.
+- 0.78 is **not a clean separator**; a real operating threshold still trades some helpful
+  for noise. Pick the operating point from a precision/recall curve.
+- Confirm the real UserPromptSubmit window before banking the `TIME_BUDGET` (assumed 30 s).
+
+**Artifacts:** `spike/relevance-cascade` branch — `cascade.py`, `layer_eval.py`,
+`run_eval*.py`, `embed_classifier.py`; fixtures regenerable from the hub via the dump
+commands in the spike README.
