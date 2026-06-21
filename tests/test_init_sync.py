@@ -8,6 +8,7 @@ Dolt-specific tests (migrate, v1 dialect) are skipped when dolt is unavailable.
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -187,6 +188,18 @@ def test_sync_upgrades_untouched_warns_on_edited(host):
     before = open(spath).read()
     sync(host)
     assert open(spath).read() == before
+
+
+def test_routing_label_matches_routing_version():
+    """The hand-typed `routing vN` label in the mine-session template must equal
+    ROUTING_VERSION, so the label can't silently drift from the mirrored CMS
+    routing-tests version (the v1/v2 mix-up this guard prevents)."""
+    labels = re.findall(r"routing v(\d+)", ins.SKILL_MINE_SESSION)
+    assert labels, "no `routing vN` label found in SKILL_MINE_SESSION"
+    assert all(int(n) == ins.ROUTING_VERSION for n in labels), (
+        f"label(s) {labels} != ROUTING_VERSION {ins.ROUTING_VERSION} — "
+        "bump both together when re-stripping a CMS routing change"
+    )
 
 
 V1_SCHEMA = ins.V2_SCHEMA.replace(  # V1 uses the v2 base (no decisions)

@@ -160,6 +160,12 @@ CREATE TABLE decisions (
 _V1_STATUS = "enum('active','retired','upstream_candidate','mirrored')"
 _V2_STATUS = "enum('active','retired')"
 
+# Routing-tests version mirrored from CMS method/lesson-routing.md. The
+# `routing v{N}` label embedded in SKILL_MINE_SESSION must equal this; a test
+# enforces it so the hand-typed label can't silently drift (see the v1/v2 mix-up
+# that motivated this guard). Bump both together when re-stripping a CMS change.
+ROUTING_VERSION = 3
+
 SKILL_MINE_SESSION = """\
 ---
 name: mine-session
