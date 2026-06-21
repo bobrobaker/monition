@@ -204,10 +204,21 @@ repo) — read it before your first run in a session.
 1. Review the session for lessons that are **reusable** (would recur) and
    **non-obvious** (a future session wouldn't rediscover them cheaply). Mistakes,
    gotchas, corrections, and confirmed preferences all qualify; routine work does not.
-2. **Route each candidate before drafting** (routing v2 — from CMS
+2. **Route each candidate before drafting** (routing v3 — from CMS
    `method/lesson-routing.md`; run in order, first decisive test wins; under
    uncertainty prefer the row — it is the only tier with an eval loop and it
-   retires cleanly):
+   retires cleanly).
+
+   **Precondition — the home must re-inject when S recurs.** A lesson is
+   *captured* only if its destination is reloaded into context the next time S
+   happens: a row fires via its hook, a CLAUDE.md line loads every session, a
+   skill or referenced doc is read when that task runs, a linter runs at commit.
+   A home that is **not** reloaded at S does not capture the lesson however well
+   it's written — most commonly a **commit message** (or a one-off doc nobody
+   reopens), invisible until deliberate git archaeology. "It's in the commit" is
+   not capture. Reject a non-re-injecting home and fall to the next decisive
+   test; prefer a row when nothing re-injecting fits.
+
    - *Behavior test:* can't state it as "in situation S, do/avoid X" with a
      nameable S → not routable; leave it in session notes.
    - *Owning surface:* an artifact that already fires at S (a skill that runs
