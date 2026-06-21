@@ -202,6 +202,29 @@ def test_routing_label_matches_routing_version():
     )
 
 
+def _cms_routing_doc():
+    """Path to CMS's canonical lesson-routing.md, or None when CMS isn't present
+    (forks / CI). Honors $CMS_ROOT, else the dev-machine ~/projects/CMS."""
+    root = os.environ.get("CMS_ROOT") or os.path.expanduser("~/projects/CMS")
+    doc = os.path.join(root, "method", "lesson-routing.md")
+    return doc if os.path.exists(doc) else None
+
+
+@pytest.mark.skipif(_cms_routing_doc() is None, reason="CMS not present (fork/CI)")
+def test_routing_version_matches_cms_canonical():
+    """Dev-only parity guard: when CMS is on this machine, monition's mirrored
+    ROUTING_VERSION must match CMS canonical's `**Version:** routing vN` header,
+    so a CMS bump that wasn't re-stripped into monition is caught at authoring
+    time (the silent CMS->monition handoff). No-ops on forks/CI (skipped)."""
+    text = open(_cms_routing_doc()).read()
+    m = re.search(r"\*\*Version:\*\*\s*routing v(\d+)", text)
+    assert m, "could not parse `**Version:** routing vN` header in CMS lesson-routing.md"
+    assert int(m.group(1)) == ins.ROUTING_VERSION, (
+        f"CMS canonical is routing v{m.group(1)} but monition ROUTING_VERSION is "
+        f"{ins.ROUTING_VERSION} — re-strip CMS lesson-routing.md into SKILL_MINE_SESSION"
+    )
+
+
 V1_SCHEMA = ins.V2_SCHEMA.replace(  # V1 uses the v2 base (no decisions)
     "status enum('active','retired') NOT NULL DEFAULT 'active',\n"
     "  mirror enum('none','candidate','mirrored') NOT NULL DEFAULT 'none',",
