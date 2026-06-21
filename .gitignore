@@ -4,3 +4,6 @@ __pycache__/
 
 # Session/working residue — handoffs are local state, not public content.
 handoffs/
+
+# relevance-cascade label dataset — real session prompts, regenerated from the hub
+/data/relevance-cascade/
