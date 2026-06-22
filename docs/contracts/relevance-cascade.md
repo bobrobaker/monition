@@ -72,9 +72,13 @@ The learned relevance head `L2′`, serialized for the runtime to load.
     the takeaway row directly (`Store` exposes `Takeaway.trigger_spec`).
 - **artifact**: weights + the exact feature spec (model name/dim, normalization, feature
   layout, any PCA basis) + a `version` + the train/test AUC at creation. Format and
-  on-disk location are an **open decision B02 must resolve and record here** (candidate:
-  a versioned file under the managed cache `embed._weights_dir()`-sibling, NOT the Dolt
-  store — weights are not row data).
+  on-disk location are an **open decision** — left **unresolved (deferred)** because B02
+  NO-GO'd and no production artifact was serialized
+  (`docs/decisions/2026-06-21-relevance-cascade-b02-no-go.md`). The implemented serializer
+  (`src/monition/relevance/head.py` — JSON: weights + feature spec + `version` + model id +
+  AUCs, with model-id refusal on load) is the *candidate* format if the workstream resumes;
+  on-disk location stays a versioned file near the managed cache `embed._weights_dir()`,
+  NOT the Dolt store (weights are not row data).
 - **embedding-version coupling**: the head is only valid for the embedding model it was
   trained against (`embed.MODEL_NAME`). Store that model id in the artifact; the runtime
   refuses to load a head whose model id ≠ the live `embed.MODEL_NAME`.

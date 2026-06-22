@@ -1,9 +1,16 @@
 # Workstream: Relevance Cascade (Phase 5)
 
-Progress: B01 done (2026-06-21) — B02/learned-head-gate next
-Blocked: none
+Progress: PAUSED 2026-06-21 at B02 — NO-GO. Head ~0.67 honest LORO AUC, 95% CI LB <0.60
+bar; volume wall (46 rows), not a model bug. B03–B05 not started, no artifact shipped.
+Verdict: docs/decisions/2026-06-21-relevance-cascade-b02-no-go.md.
+Blocked: workstream paused (gate fail). Revisit = re-open the spike's two false premises
+(leak-inflated 0.78; prematurely-buried metamatch negative). Overnight/autonomous candidate.
 
 ## Objective
+
+> **PAUSED — B02 NO-GO (2026-06-21).** The "0.78" below was leak-inflated; honest is ~0.67,
+> which failed the gate. See the Progress line + `docs/decisions/2026-06-21-relevance-cascade-b02-no-go.md`.
+> Objective retained as the original (now-refuted) plan of record.
 
 Ship the spike-validated relevance filter: a cost-ordered, certainty-gated **cascade** of
 relevance **Layers** on the passive `on_demand` fire path, whose decisive layer `L2′` is a
@@ -30,10 +37,10 @@ usefulness bar before any runtime integration; B03–B05 build and roll out the 
 | B | State | File | Goal | Depends |
 |---|---|---|---|---|
 | B01 | done | buckets/B01_label-foundation.md | Build the (prompt,row)→label dataset + held-out split | — |
-| B02 | next | buckets/B02_learned-head-gate.md | Train L2′ head, at-scale eval, GO/NO-GO gate, serialize | B01 |
-| B03 | later | buckets/B03_cascade-runtime.md | Layer interface + orchestrator + L0 + L2′ layer in src | B02 |
-| B04 | later | buckets/B04_hook-integration.md | Wire L0+L2′ into the passive on_demand path only | B03 |
-| B05 | later | buckets/B05_operating-point-rollout.md | Pick operating point, dogfood, measure, ship | B04 |
+| B02 | done (NO-GO) | buckets/B02_learned-head-gate.md | Train L2′ head, at-scale eval, GO/NO-GO gate, serialize | B01 |
+| B03 | paused | buckets/B03_cascade-runtime.md | Layer interface + orchestrator + L0 + L2′ layer in src | B02 |
+| B04 | paused | buckets/B04_hook-integration.md | Wire L0+L2′ into the passive on_demand path only | B03 |
+| B05 | paused | buckets/B05_operating-point-rollout.md | Pick operating point, dogfood, measure, ship | B04 |
 
 States: `next`, `active`, `blocked`, `done`, `deferred`, `later`.
 
@@ -104,3 +111,13 @@ States: `next`, `active`, `blocked`, `done`, `deferred`, `later`.
   row-disjoint train 104 / test 25. **Gate methodology corrected:** leave-row-out CV vs
   the AUC CI, not a single split (the honest single split is too small/imbalanced at 46
   rows). B02 inherits the corrected contract §1/§2.
+- 2026-06-21 **B02 NO-GO — workstream paused.** Built the head + eval (`src/monition/relevance/`,
+  `tools/train_relevance_head.py`) and ran the gate (bar set up front: 95% CI LB > 0.60).
+  Honest row-disjoint LORO: every learned head lands at AUC ~0.63–0.68 (logistic-on-product
+  0.669 CI [0.551,0.778]; best PCA40 0.676 CI [0.582,0.762]); cosine is useless (0.441). No
+  variant clears the bar — best CI LB 0.582 < 0.60. Robust to an L2 sweep {2…800} (point
+  estimate plateaus, falls with more reg). **Volume wall (46 rows), not a model bug.** No
+  artifact serialized. The spike's 0.78 was leak-inflated; honest is ~0.67. **Revisit** =
+  re-open two false spike premises — the 0.78 AND the prematurely-buried "metamatch" negative
+  (same leaky n=102 fixture; a ~1-param signal is more estimable under scarcity, so it may
+  invert under honest eval). Verdict doc: `docs/decisions/2026-06-21-relevance-cascade-b02-no-go.md`.

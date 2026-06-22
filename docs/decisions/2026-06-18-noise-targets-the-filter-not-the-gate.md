@@ -6,6 +6,10 @@ resolved and the first-line lever is reframed — see *Update — 2026-06-20* at
 **Amended 2026-06-21** (spike-validated): the 06-20 cheap-signal reframe is itself
 superseded — a worktree spike refuted threshold/metaness filtering and validated a
 learned embedding relevance head; see *Update — 2026-06-21* at end.
+**Amended 2026-06-21** (B02 NO-GO): the spike's empirical numbers (the "leakage-free
+0.78" and the metaness-match verdict) did NOT survive honest row-disjoint evaluation —
+the honest head is ~0.67 and failed the B02 gate; the workstream is paused. Filter-not-Gate
+still stands. See `docs/decisions/2026-06-21-relevance-cascade-b02-no-go.md`.
 Project-internal (pure machinery — no cross-repo confer; the row-firing pipeline is
 monition's). Partially revisits the EV-gate design (`score.py`); does not delete it.
 Surfaced as a parked direction in the semantic-daemon session and promoted here so
@@ -193,6 +197,18 @@ the warm-embedding daemon, `embed.py`). That is the layer's design question, now
 concrete enough to dispatch.
 
 ## Update — 2026-06-21 (spike-validated)
+
+> **⚠ Superseded in part — 2026-06-21 (B02 NO-GO).** Two empirical claims below did NOT
+> survive honest evaluation, see `docs/decisions/2026-06-21-relevance-cascade-b02-no-go.md`:
+> (1) Finding #4's "**0.78 grouped-CV AUC (whole-prompt holdout — leakage-free)**" was
+> **leakage-inflated** — a whole-prompt holdout over only ~46 rows leaks ROW identity (a
+> per-row prior alone hits 0.77), so it is *not* leakage-free. Honest row-disjoint
+> leave-row-out CV puts the head at **~0.67**, and it failed the B02 usefulness gate.
+> (2) Finding #3's metaness-match verdict ("real but insufficient, ~0 conditional lift")
+> was measured on the **same leaky n=102 fixture**, so it is equally untrusted and should
+> be re-tested before being relied on. **The core decision (Filter not Gate) still
+> stands**; only the spike's empirical numbers are corrected. The relevance-cascade
+> workstream is paused.
 
 A throwaway worktree spike (`spike/relevance-cascade`) built the structure and replayed
 it against the **102 rated `on_demand` firings** from the live hub. It **supersedes the

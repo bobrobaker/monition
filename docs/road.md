@@ -215,24 +215,30 @@ query only — never the backbone).
 
 ### Phase 5 — Trigger/Filter refinement (the relevance cascade)
 
-`<----- Ongoing phase ----->`
+**Status:** paused 2026-06-21 at B02 — **NO-GO** (`docs/workstreams/relevance-cascade/`).
+The head did not clear the usefulness gate; B03–B05 did not start, no artifact shipped.
+Verdict + full result: `docs/decisions/2026-06-21-relevance-cascade-b02-no-go.md`.
 
-**Status:** active 2026-06-21 (`docs/workstreams/relevance-cascade/`, B01–B05).
-
-**Deliverable:** reduce `on_demand` firing noise (the dominant noise source) with a
-cost-ordered, certainty-gated **cascade** of relevance Layers on the *passive* fire
-path. The decisive layer `L2′` is a learned head over full prompt⊕row embeddings —
-spike-validated at 0.78 grouped-CV AUC vs cosine 0.63, no inline LLM (the LLM is an
-offline label oracle only). Grounded:
+**Deliverable (attempted):** reduce `on_demand` firing noise (the dominant noise source)
+with a cost-ordered, certainty-gated **cascade** of relevance Layers on the *passive* fire
+path. The decisive layer `L2′` is a learned head over full prompt⊕row embeddings, no
+inline LLM (the LLM is an offline label oracle only). Grounded:
 `docs/decisions/2026-06-18-noise-targets-the-filter-not-the-gate.md` (Update —
 2026-06-21); spike branch `spike/relevance-cascade`. Contract:
 `docs/contracts/relevance-cascade.md`.
 
-**Exit (gated):** the head must clear a usefulness bar on the **human-only** test
-split (B02 GO/NO-GO) before runtime integration. On pass — the cascade gates the
-passive `on_demand` path at a chosen operating point with measured noise reduction
-versus the always-fire baseline, explicit pulls left ungated. On fail — the phase
-pauses/closes with the finding recorded; no integration on an unproven head.
+**Why paused:** the spike's "0.78 grouped-CV AUC" was **leakage-inflated** (B01 red-team
+C1/C2); under honest row-disjoint leave-row-out CV the head is **~0.67**, and the 95% CI
+lower bound (~0.55–0.58) does not clear the 0.60 usefulness bar — a *volume* wall (only 46
+distinct rows), not a model bug. Operationally the head suppresses only ~20% of noise at
+≥90% helpful retention. Revisit (overnight/autonomous candidate) must re-open two false
+spike premises: the 0.78 headline AND the prematurely-buried "metamatch" negative (also
+measured on the same leaky n=102 fixture, so equally untrusted). Cascade orchestrator (B03)
+and metamatch are **not live** — only the B01 dataset + B02 head exist (`src/monition/relevance/`).
+
+**Exit (gated) — fail branch taken:** the head had to clear a usefulness bar on the
+**human-only** split (B02 GO/NO-GO) before runtime integration. It did not; per this exit
+clause the phase paused with the finding recorded; no integration on an unproven head.
 
 ---
 
