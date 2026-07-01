@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "monition": {
+      "command": "monition",
+      "args": [
+        "mcp-serve"
+      ]
+    }
+  }
+}

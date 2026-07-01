@@ -9,6 +9,35 @@
             "command": "python3 tools/craft_reminder.py"
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v monition >/dev/null 2>&1 || exit 0; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/monition\"; mkdir -p \"$d\"; monition fire-hook 2>>\"$d/hook-errors.log\" || true"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v monition >/dev/null 2>&1 || exit 0; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/monition\"; mkdir -p \"$d\"; monition session-brief 2>>\"$d/hook-errors.log\" || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v monition >/dev/null 2>&1 || exit 0; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/monition\"; mkdir -p \"$d\"; monition prompt-hook 2>>\"$d/hook-errors.log\" || true"
+          }
+        ]
       }
     ]
   }

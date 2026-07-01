@@ -56,13 +56,24 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 - **Never codify silently.** Rule and convention changes are proposed and accepted
   before writing — use `/codify`.
 - **Non-trivial design decisions get a design review** — the question, options,
-  and *why the rejected ones lost*. Project-internal calls land in
+  and *why the rejected ones lost*, plus a **supersession audit** (grep
+  `docs/decisions/` + `road.md §2` for what it supersedes or contradicts, and mark any
+  superseded doc) and a citation of the **contract section it affirms** — a new
+  decision reads as authoritative, so reconcile what it overrides or restates rather
+  than leaving two live answers. Project-internal calls land in
   `docs/decisions/YYYY-MM-DD-slug.md`; cross-project calls in the cross-project decision
   store. `road.md §2` stays the compressed verdict that links back.
 - Wrapping up mid-task: `/handoff` writes a decision-ready handoff to `handoffs/`.
 - Store writes flow only through module commands; all store reads go through the
   single approved reader in `src/monition/`. Any other code querying the store
   directly (bypassing the reader or WriteStore) is a contract violation.
+- **Synthetic store writes never touch the hub.** Instrumentation/measurement/test
+  rows go to a scratch store (`--store` / `MONITION_STORE`, or a tmp SQLite), seeded
+  from a `monition snapshot` when realistic corpus size matters, and discarded with
+  `rm` — writing them to the hub manufactures a "purge" need that gets served by a raw
+  `dolt sql DELETE`: a blind single-write-path violation that can nuke rated firings
+  (the eval substrate). Junk already in the hub → Dolt `revert`/`retire`, never a
+  DELETE. (No purge/delete/modify primitive — decided 2026-06-21.)
 - **Hooks are blocking, cold subprocesses.** Each `fire-hook`/`session-brief`/
   `prompt-hook` run is a fresh process with no warm state, on the user's critical
   path, under the harness timeout (`UserPromptSubmit` = 30 s). Anything heavy —
