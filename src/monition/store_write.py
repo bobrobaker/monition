@@ -16,7 +16,31 @@ import os
 import re
 import subprocess
 
+from . import session_state
 from .store import Store, StoreContractError
+
+# Injection cap: unbounded semantic matching injected 41-75 rows (~6k tokens)
+# on broad "meta" prompts. Lexical hits are user-designed deterministic
+# triggers and are ALWAYS kept; semantic-only hits are capped to the top
+# SEMANTIC_TOP_K by cosine score, then the combined one-liner budget
+# INJECTION_CHAR_BUDGET drops the lowest-scoring semantic hits first. Dropping
+# is never silent: `on_demand_match` reports the count and the executors
+# render a "+N suppressed" trailer.
+SEMANTIC_TOP_K = 5
+INJECTION_CHAR_BUDGET = 6000
+
+# Dedup at birth: `find_resurrection` checks only currently-suppressed rows, so
+# an active near-duplicate used to insert silently (the store grew several
+# multi-copy clone groups). An exact one_liner match, or embedding cosine >=
+# DUPLICATE_COSINE, against an active non-suppressed row refuses the add
+# (`--force` overrides). Deliberately stricter than embed.SIM_THRESHOLD: at 0.9
+# two one-liners say the same thing, not merely the same topic.
+DUPLICATE_COSINE = 0.9
+
+# `monition add` rejects a longer one_liner (without --force): every char of a
+# one_liner is injected into context on every fire, so length is a per-fire
+# recurring cost. Detail belongs in full_content (pulled on demand, free).
+ONE_LINER_MAX_CHARS = 250
 
 
 def current_repo():
@@ -124,6 +148,12 @@ def _monition_version():
 # false "resurrection" needlessly blocks an add, so prefer misses to noise.
 _RESURRECTION_LEX_JACCARD = 0.4
 
+# Same-lesson bar for the embedding path, and a cap on how many candidates the
+# consent gate shows — resurrection asks "is this THE suppressed lesson,
+# re-learned?", a much stricter question than firing relevance.
+RESURRECTION_COSINE = 0.8
+RESURRECTION_MAX_CANDIDATES = 3
+
 
 def _content_tokens(text):
     return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) >= 4}
@@ -134,6 +164,19 @@ def _jaccard(a, b):
     if not ta or not tb:
         return 0.0
     return len(ta & tb) / len(ta | tb)
+
+
+def _cap_hits(lexical, semantic):
+    """(kept_hits, capped_count) — apply the injection cap. `semantic` must be
+    sorted by score descending; lexical hits are never dropped, even when they
+    alone exceed the budget (the cap bounds semantic noise, not the triggers a
+    user designed to fire)."""
+    kept = list(semantic[:SEMANTIC_TOP_K])
+    lexical_chars = sum(len(h["one_liner"]) for h in lexical)
+    while kept and (lexical_chars + sum(len(h["one_liner"]) for h in kept)
+                    > INJECTION_CHAR_BUDGET):
+        kept.pop()  # lowest-scoring semantic hit goes first
+    return lexical + kept, len(semantic) - len(kept)
 
 
 class WriteStore(Store):
@@ -179,9 +222,14 @@ class WriteStore(Store):
     def _not_yet_fired(self, rows, session):
         if not session:
             return rows
+        # Compaction re-arm: firings at or before the session's latest
+        # compaction marker were wiped from the context window along with the
+        # rest of it, so they no longer count as disclosed (see the
+        # session_state module docstring).
+        floor = session_state.compaction_floor(session)
         fired = self._sql(
             "SELECT DISTINCT takeaway_id FROM firings"
-            f" WHERE session_id = {val(session)}"
+            f" WHERE session_id = {val(session)} AND id > {int(floor)}"
         )
         fired_ids = {r["takeaway_id"] for r in fired}
         return [r for r in rows if r["id"] not in fired_ids]
@@ -199,7 +247,14 @@ class WriteStore(Store):
         ]
         return json.dumps(self._not_yet_fired(hits, session))
 
-    def on_demand_match(self, query, session=None, current_repo=None):
+    def on_demand_match(self, query, session=None, current_repo=None, cap=True):
+        """Hybrid on_demand retrieval. Returns a JSON object
+        `{"hits": [...], "capped": N}`: `hits` are `{id, one_liner}` dicts —
+        every lexical hit first, then semantic hits by cosine descending —
+        after the per-session dedup and (with `cap=True`) the injection cap;
+        `capped` is how many above-threshold semantic hits the cap dropped.
+        `cap=False` is the explicit-pull escape hatch (`monition query`):
+        everything is returned and `capped` is 0."""
         rows = self._sql(
             "SELECT id, one_liner, trigger_spec FROM takeaways"
             " WHERE status = 'active' AND trigger_kind = 'on_demand'"
@@ -214,10 +269,11 @@ class WriteStore(Store):
 
         from . import trace
         trace.mark("match:sql_done")
-        lexical = [r for r in rows if lex_hit(r)]
-        hits = [{"id": r["id"], "one_liner": r["one_liner"]} for r in lexical]
+        lexical = [{"id": r["id"], "one_liner": r["one_liner"]}
+                   for r in rows if lex_hit(r)]
         rest = [r for r in rows if not lex_hit(r)]
         trace.mark("match:lexical_done")
+        semantic = []
         if rest:
             # fail-open: embeddings absent/broken → lexical-only is a valid result
             try:
@@ -230,11 +286,18 @@ class WriteStore(Store):
                     (p for p in zip(sims, rest) if p[0] >= embed.SIM_THRESHOLD),
                     key=lambda p: p[0], reverse=True,
                 )
-                hits += [{"id": r["id"], "one_liner": r["one_liner"]}
-                         for _, r in ranked]
+                semantic = [{"id": r["id"], "one_liner": r["one_liner"]}
+                            for _, r in ranked]
             except Exception:
                 pass
-        return json.dumps(self._not_yet_fired(hits, session))
+        # dedup before capping so already-disclosed hits don't consume cap slots
+        lexical = self._not_yet_fired(lexical, session)
+        semantic = self._not_yet_fired(semantic, session)
+        if cap:
+            hits, capped = _cap_hits(lexical, semantic)
+        else:
+            hits, capped = lexical + semantic, 0
+        return json.dumps({"hits": hits, "capped": capped})
 
     def session_start(self, session=None, current_repo=None):
         rows = self._sql(
@@ -348,14 +411,47 @@ class WriteStore(Store):
                     "decided_at": d.decided_at.strftime("%Y-%m-%d"),
                 })
         matches.sort(key=lambda m: m["similarity"], reverse=True)
+        return matches[:RESURRECTION_MAX_CANDIDATES]
+
+    def find_active_duplicate(self, one_liner):
+        """Active, non-suppressed takeaways that near-duplicate `one_liner`:
+        an exact (stripped) string match always counts; with the embed extra
+        present, embedding cosine >= DUPLICATE_COSINE also counts. Fail-open
+        to exact-only when embeddings are unavailable — Jaccard is too coarse
+        for duplicate-grade similarity, and a false positive blocks an add.
+        Suppressed rows are find_resurrection's candidates, not ours, so the
+        two birth gates stay disjoint. Returns matches, highest similarity
+        first, for the consent gate (`--force` overrides)."""
+        latest = self._latest_decisions()
+        suppressed = {tid for tid, d in latest.items()
+                      if d.decision == "suppress"}
+        rows = [t for t in self.takeaways()
+                if t.status == "active" and t.id not in suppressed]
+        if not rows:
+            return []
+        needle = one_liner.strip()
+        scores = [1.0 if t.one_liner.strip() == needle else 0.0 for t in rows]
+        try:
+            from . import embed
+            sims = embed.semantic_scores(needle, [t.one_liner for t in rows])
+            scores = [max(s, float(c)) for s, c in zip(scores, sims)]
+        except Exception:
+            pass  # fail-open: exact-match-only
+        matches = [{"id": t.id, "one_liner": t.one_liner,
+                    "similarity": round(float(s), 3)}
+                   for t, s in zip(rows, scores) if s >= DUPLICATE_COSINE]
+        matches.sort(key=lambda m: m["similarity"], reverse=True)
         return matches
 
     def _content_similarity(self, query, texts):
         """(scores, threshold): embedding cosine when the embed extra is present,
-        fail-open to lexical Jaccard otherwise — mirrors on_demand_match."""
+        fail-open to lexical Jaccard otherwise. The embedding threshold is
+        same-lesson grade (RESURRECTION_COSINE), NOT the firing-relevance
+        SIM_THRESHOLD — at 0.6, a store with many suppressed rows lists a wall
+        of unrelated candidates on every add."""
         try:
             from . import embed
-            return embed.semantic_scores(query, texts), embed.SIM_THRESHOLD
+            return embed.semantic_scores(query, texts), RESURRECTION_COSINE
         except Exception:
             return [_jaccard(query, t) for t in texts], _RESURRECTION_LEX_JACCARD
 

@@ -1,6 +1,6 @@
 [project]
 name = "monition"
-version = "0.1.0"
+version = "0.3.1"
 description = "The value layer over takeaway stores: offline audit now, EV scoring later"
 requires-python = ">=3.10"
 dependencies = ["pyyaml>=6"]

@@ -22,7 +22,8 @@ INSERT INTO takeaways (id, created, kind, trigger_kind, trigger_spec, one_liner,
 
 
 def _ids(ws, repo):
-    return {h["id"] for h in json.loads(ws.on_demand_match("deploy plan", current_repo=repo))}
+    return {h["id"] for h in
+            json.loads(ws.on_demand_match("deploy plan", current_repo=repo))["hits"]}
 
 
 def test_project_rows_isolate_by_origin_repo(tmp_path):

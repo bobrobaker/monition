@@ -22,7 +22,20 @@ from .report import render, render_tune
 from .snapshot import SnapshotError, capture as capture_snapshot
 from .store import Store, StoreContractError
 from .score import score as run_score
-from .store_write import WriteStore, iid, resolve_store_path, current_repo
+from .store_write import (ONE_LINER_MAX_CHARS, WriteStore, iid,
+                          resolve_store_path, current_repo)
+
+
+def _installed_version():
+    """The installed package version — what a host's handshake probes. Falls
+    back to the module VERSION constant for non-distribution runs (PYTHONPATH
+    / source checkouts)."""
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version("monition")
+    except PackageNotFoundError:
+        from .init_sync import VERSION
+        return VERSION
 
 
 def _git_root():
@@ -65,11 +78,38 @@ def _render_resurrection(matches):
     return "\n".join(out)
 
 
+def _render_duplicate(matches):
+    """The dedup-at-birth gate: an active near-duplicate refuses the insert."""
+    out = [
+        "DUPLICATE: this lesson near-matches an ACTIVE takeaway.",
+        "A duplicate splits the row's firing/rating history instead of strengthening it.",
+        "",
+    ]
+    for m in matches:
+        out.append(f"  t{m['id']}  sim {m['similarity']:.2f}  \"{m['one_liner']}\"")
+    top = matches[0]["id"]
+    out += [
+        "",
+        "Instead:",
+        f"  monition rate <f-id> helpful|noise           rate a recent firing of t{top}",
+        f"  monition log-recurrence t{top} --context '…'   log this recurrence as a helpful firing",
+        "  or re-run with --force if it is genuinely distinct.",
+    ]
+    return "\n".join(out)
+
+
 def _run_add(ws, args):
-    """`add` with Phase-4 suppression-resurrection detection. Without --resolve,
-    a near-match to a currently-suppressed row refuses the insert and prints the
-    consent gate (exit 3) for the caller to resolve; otherwise inserts normally.
-    With --resolve, applies the chosen resolution."""
+    """`add` with the birth gates, in order: the one-liner length cap
+    (`--force` overrides), Phase-4 suppression-resurrection detection
+    (`--resolve` resolves), and the active-duplicate gate (`--force`
+    overrides). A gate refusal prints the consent gate and exits 2 (length) or
+    3 (resurrection/duplicate); otherwise the row inserts normally."""
+    if len(args.one_liner) > ONE_LINER_MAX_CHARS and not args.force:
+        print(f"one_liner is {len(args.one_liner)} chars — the cap is "
+              f"{ONE_LINER_MAX_CHARS}: every char is injected into context on "
+              "every fire. Tighten it (detail belongs in --full-content, "
+              "pulled on demand for free) or pass --force.", file=sys.stderr)
+        return 2
     if args.resolve:
         print(ws.resolve_add(args.resolve, args.kind, args.trigger_kind,
                              args.one_liner, args.trigger_spec, args.full_content,
@@ -79,6 +119,11 @@ def _run_add(ws, args):
     if matches:
         print(_render_resurrection(matches))
         return 3
+    if not args.force:
+        dups = ws.find_active_duplicate(args.one_liner)
+        if dups:
+            print(_render_duplicate(dups))
+            return 3
     print(ws.add(args.kind, args.trigger_kind, args.one_liner, args.trigger_spec,
                  args.full_content, args.scope, args.source, args.reach, args.origin_repo))
     return 0
@@ -90,6 +135,8 @@ def main(argv=None):
     if os.environ.get("MONITION_TEST_CRASH"):
         raise RuntimeError("induced crash (MONITION_TEST_CRASH)")
     p = argparse.ArgumentParser(prog="monition", description=__doc__)
+    p.add_argument("--version", action="version",
+                   version=f"monition {_installed_version()}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("report", help="audit a Monition store by path")
@@ -116,6 +163,9 @@ def main(argv=None):
                    help="absolute repo root this row belongs to (default: current repo)")
     s.add_argument("--resolve", metavar="CHOICE",
                    help="resolve a suppressed near-match: new | merge:ID | log-helpful:ID")
+    s.add_argument("--force", action="store_true",
+                   help="override the one-liner length cap and the "
+                        "active-duplicate gate")
 
     s = lifecycle("list")
     s.add_argument("--status", default="active")
@@ -410,9 +460,11 @@ def main(argv=None):
                     "no store path: pass --store or run inside a git repo"
                 )
             ws = WriteStore(path)
+            # cap=False: `query` is the explicit uncapped escape hatch the
+            # hooks' "+N suppressed by cap" trailer points at
             print(ws.on_demand_match(args.query_text,
                                      session=getattr(args, "session", None),
-                                     current_repo=current_repo()))
+                                     current_repo=current_repo(), cap=False))
             return 0
         if args.cmd == "report":
             print(render(Store(args.store_path)))

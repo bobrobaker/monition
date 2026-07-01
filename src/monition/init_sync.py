@@ -23,7 +23,7 @@ from .storage_backends import DoltBackend, SqliteBackend, StorageBackendError, _
 from .store import Store, StoreContractError
 from .store_write import val
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 # v2 DDL (takeaways + firings) — used to construct V1 test fixtures and as the
 # base for V3_SCHEMA. The contract's field tables are the source of truth.
@@ -166,7 +166,7 @@ _V2_STATUS = "enum('active','retired')"
 # equal this; a test enforces it so the human-readable legend can't drift from the
 # generated content (see the v1/v2 mix-up that motivated this guard). Bump when
 # re-stripping a CMS routing change, alongside re-running tools/regen_from_cms.py.
-ROUTING_VERSION = 3
+ROUTING_VERSION = 4
 
 # SKILL_MINE_SESSION and METHOD_LESSON_ROUTING are GENERATED from CMS canonical by
 # tools/regen_from_cms.py and imported at the top of this module — do not hand-edit;
@@ -177,7 +177,7 @@ DOCS = {"method/lesson-routing.md": METHOD_LESSON_ROUTING}
 
 README_LINE = (
     "Takeaway capture/disclosure via [Monition](https://github.com/bobrobaker/monition): "
-    "`pip install git+https://github.com/bobrobaker/monition.git` (hooks fail open if absent).\n"
+    "`uv tool install git+https://github.com/bobrobaker/monition.git` (hooks fail open if absent).\n"
 )
 
 DUMP_HOOK_SNIPPET = (
@@ -212,27 +212,50 @@ def _managed_state(path, body):
 
 
 def _merge_hook_entries(settings):
-    """Add monition's guarded hook entries; never touch unrelated ones."""
-    added = []
+    """Add or refresh monition's guarded hook entries; never touch unrelated
+    ones. A monition entry is identified by its subcommand token (e.g.
+    "monition prompt-hook"), not the exact command string — so when the
+    guarded command changes between versions, the stale entry is REPLACED
+    (and accumulated duplicates collapsed) instead of a new one appending
+    beside it."""
+    changed = []
     hooks = settings.setdefault("hooks", {})
     wanted = [
-        ("PreToolUse", "Write|Edit", guarded_hook_command("fire-hook")),
-        ("SessionStart", None, guarded_hook_command("session-brief")),
-        ("UserPromptSubmit", None, guarded_hook_command("prompt-hook")),
+        ("PreToolUse", "Write|Edit", "fire-hook"),
+        ("SessionStart", None, "session-brief"),
+        ("UserPromptSubmit", None, "prompt-hook"),
     ]
-    for event, matcher, cmd in wanted:
+    for event, matcher, subcommand in wanted:
+        cmd = guarded_hook_command(subcommand)
+        token = f"monition {subcommand}"
         entries = hooks.setdefault(event, [])
-        present = any(
-            h.get("command") == cmd
-            for entry in entries for h in entry.get("hooks", [])
-        )
-        if not present:
-            entry = {"hooks": [{"type": "command", "command": cmd}]}
-            if matcher:
-                entry = {"matcher": matcher, "hooks": entry["hooks"]}
-            entries.append(entry)
-            added.append(event)
-    return added
+        ours = [h for entry in entries for h in entry.get("hooks", [])
+                if token in (h.get("command") or "")]
+        if len(ours) == 1 and ours[0].get("command") == cmd:
+            continue  # current — nothing to do
+        if ours:
+            # stale command and/or duplicates: remove every hook carrying our
+            # subcommand token, dropping only entries *we* emptied
+            emptied = []
+            for entry in entries:
+                hs = entry.get("hooks", [])
+                if any(token in (h.get("command") or "") for h in hs):
+                    entry["hooks"] = [
+                        h for h in hs
+                        if token not in (h.get("command") or "")
+                    ]
+                    if not entry["hooks"]:
+                        emptied.append(entry)
+            for entry in emptied:
+                entries.remove(entry)
+            changed.append(f"{event} (replaced)")
+        else:
+            changed.append(event)
+        entry = {"hooks": [{"type": "command", "command": cmd}]}
+        if matcher:
+            entry = {"matcher": matcher, "hooks": entry["hooks"]}
+        entries.append(entry)
+    return changed
 
 
 def _plan_settings(root):

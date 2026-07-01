@@ -13,6 +13,17 @@ import pytest
 
 from monition.init_sync import V6_SCHEMA_SQLITE
 
+
+@pytest.fixture(autouse=True)
+def _isolate_state_home(monkeypatch, tmp_path):
+    """Every test gets a throwaway XDG_STATE_HOME so the hook state log and
+    compaction markers never touch the real ~/.local/state/monition (test
+    fixtures were polluting the live hook-errors.log). MONITION_STORE is
+    likewise dropped so a dev shell's hub env can't leak in — tests that need
+    a store set it explicitly."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    monkeypatch.delenv("MONITION_STORE", raising=False)
+
 # SQLite schema for test fixtures — same DDL that `monition init` uses.
 SCHEMA = V6_SCHEMA_SQLITE
 

@@ -132,7 +132,14 @@ belongs to exactly one repo), then `DROP COLUMN mirror`.
   string (lexical pass), or — when the optional `monition[embed]` extra is
   installed — if the embedding of `one_liner + trigger_spec` falls within
   `SIM_THRESHOLD` cosine similarity of the query (semantic pass). Lexical hits
-  rank first, semantic hits by similarity descending. Absent or broken
+  rank first, semantic hits by similarity descending. An **injection cap**
+  bounds the semantic tail: lexical hits (user-designed deterministic
+  triggers) are always kept; semantic hits are capped to the top
+  `SEMANTIC_TOP_K` by cosine, then an overall `INJECTION_CHAR_BUDGET` (over
+  one-liner chars) drops the lowest-scoring semantic hits first. Dropping is
+  never silent — `on_demand_match` returns `{"hits": [...], "capped": N}` and
+  the executors render a "+N more suppressed by cap" trailer; `monition query`
+  is the uncapped escape hatch. Absent or broken
   embeddings degrade silently to lexical-only; the embedding cache is derivable
   state outside the store and never contract data. Dedup semantics: same
   per-session `_not_yet_fired` filter as `edit_path`. Two executors bind it:
@@ -140,7 +147,8 @@ belongs to exactly one repo), then `DROP COLUMN mirror`.
   text, EV-scores, dedups per session, fires with `trigger_context` = prompt
   (truncated to 200 chars); the MCP tool `match_gotchas` (`monition mcp-serve`)
   is an explicit pull — no scorer gate, no session dedup (`session_id` NULL),
-  firings still logged.
+  firings still logged, injection cap still applied (the result still lands in
+  the context window).
 
 ### `status` and `reach` — two axes, one meaning each
 
@@ -200,6 +208,15 @@ raw occurrence counts is spec-narrowing prediction (what would a tighter glob ha
 matched later in the session?), and that is reconstructed by replaying specs
 against session histories — never read off `firings`.
 
+**Compaction re-arm.** Harness compaction (SessionStart `source: "compact"`)
+wipes previously injected disclosures from the context window while the
+session id stays the same, so "at most once per session" would leave the row
+invisibly undisclosed. The session-brief executor records a compaction marker
+— the store's `MAX(firings.id)` at that moment, in a per-machine state file
+under `XDG_STATE_HOME` (markers are harness-session state, never store data)
+— and dedup counts only firings **after** the latest marker: rows disclosed
+before the compaction may fire again.
+
 ### Derived values
 
 `fire_count`, `last_fired`, precision, noise rate — always computed from `firings` at
@@ -226,6 +243,14 @@ executors call `score()` before each potential disclosure.
 - **Cold-start** (`cold_start = 1`, `evidence_count < N_COLD_START`): always fire.
   Monition only suppresses what it has proof is noise; absence of evidence is not
   evidence of noise.
+- **Cold-pause** (the bounded exception to cold-start): a row with
+  `N_UNRATED_PAUSE` or more lifetime firings and **zero** ratings is suppressed
+  until any rating arrives. Its decisions row is `decision = 'suppress'` with
+  `cold_start = 1` and `evidence_count = 0` — a signature no other scoring path
+  writes, so it stays distinguishable without widening the decision enum.
+  Pausing does not starve the rating path: the already-logged firings are the
+  rating worklist, and `export-firings --order-by priority` ranks a cold-paused
+  row at the head (rated 0 → boundary closeness 1.0 × high traffic).
 - **Evidence-based** (`cold_start = 0`): fire if `ev_score >= EV_THRESHOLD`, else
   suppress. `N_COLD_START` and `EV_THRESHOLD` are module constants in
   `src/monition/score.py`; Phase 4 tunes them against the accumulated ratings log.
@@ -318,5 +343,13 @@ is the host project's concern.
 - [ ] A v1-dialect store (old `status` enum domain) rejected with a message naming
       the migration, not a generic type mismatch.
 - [ ] `session_id = "unknown"` bucketed separately from real sessions.
+- [ ] Injection cap: lexical hits never dropped; semantic hits capped top-K
+      then by char budget, lowest score first; dropped count reported (trailer),
+      never silent.
+- [ ] Cold-pause: `N_UNRATED_PAUSE`+ lifetime firings with zero ratings →
+      suppress until any rating; the paused row still heads the
+      `--order-by priority` rating worklist.
+- [ ] Compaction re-arm: a `source: "compact"` session brief re-arms
+      per-session dedup for firings logged before the marker.
 - [ ] Live check: `monition report <store-path>` runs without writes
       (store working set unchanged after the run).

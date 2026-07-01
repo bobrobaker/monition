@@ -19,7 +19,7 @@ import shlex
 import subprocess
 import sys
 
-from . import trace
+from . import session_state, trace
 from .score import score as _score
 from .store_write import WriteStore
 
@@ -40,9 +40,19 @@ def _log_path():
     return os.path.join(state, "monition", "hook-errors.log")
 
 
+# The state log is append-per-event with no reader-driven bound, so the writer
+# owns rotation: current + one .1 generation ≈ 2×MAX on disk, worst case.
+LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
 def _log(msg):
     path = _log_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        if os.path.getsize(path) > LOG_MAX_BYTES:
+            os.replace(path, path + ".1")
+    except OSError:
+        pass
     with open(path, "a") as f:
         f.write(msg + "\n")
 
@@ -158,7 +168,9 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
                               result["evidence_count"], result["cold_start"],
                               result["ev_score"]))
             if result["decision"] == "suppress":
-                _log(f"[suppress] t{h['id']} session={session}")
+                # reason distinguishes a cold-pause from an evidence-based suppress
+                label = result.get("reason") or "suppress"
+                _log(f"[{label}] t{h['id']} session={session}")
                 continue
         # result is None → fail-open fire (no decision row); else decision == 'fire'
         firing = store.fire(str(h["id"]), trigger_kind, session, context, model,
@@ -228,6 +240,18 @@ def session_brief():
             return
         session = str(data.get("session_id", "unknown"))
 
+        # Compaction wipes injected firing text from the context window while
+        # the per-session dedup would still block a re-fire. Record a marker
+        # (the store's current max firing id) so dedup only counts firings
+        # after it — the rows re-arm, including for this very brief.
+        if data.get("source") == "compact":
+            try:
+                row = store._sql("SELECT MAX(id) AS id FROM firings")
+                max_id = (row[0].get("id") if row else None) or 0
+                session_state.record_compaction(session, max_id)
+            except Exception as e:
+                _log(f"[compaction-marker-error] session={session}: {e}")
+
         rows = json.loads(store.session_start(session, current_repo=repo))
         trace.mark("matched")
         lines = _disclose(store, rows, "session_start", session,
@@ -263,8 +287,13 @@ def prompt_hook():
             return
         session = str(data.get("session_id", "unknown"))
 
-        hits = json.loads(store.on_demand_match(prompt, session, current_repo=repo))
+        res = json.loads(store.on_demand_match(prompt, session, current_repo=repo))
+        hits, capped = res["hits"], res["capped"]
         trace.mark("matched")
+        if capped:
+            # never a silent truncation: note the cap in the state log too
+            _log(f"[capped] {capped} semantic hit(s) over the injection cap"
+                 f" session={session}")
         lines = _disclose(store, hits, "on_demand", session, prompt[:200],
                           _session_model(data), situation=prompt[:SITUATION_CHARS],
                           current_repo=repo)
@@ -276,6 +305,9 @@ def prompt_hook():
             "Takeaways for this prompt (full text: monition show <t-id>; "
             "rate: monition rate <f-id> helpful|noise):\n" + "\n".join(lines)
         )
+        if capped:
+            msg += (f"\n(+{capped} more suppressed by cap — "
+                    f"monition query \"...\" shows all)")
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": msg}}))

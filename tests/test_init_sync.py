@@ -150,6 +150,69 @@ def test_init_preserves_unrelated_mcp_servers(host):
     assert merged["mcpServers"]["monition"]["command"] == "monition"
 
 
+def _hook_commands(host, event, token):
+    with open(os.path.join(host, ".claude", "settings.json")) as f:
+        settings = json.load(f)
+    return [h["command"] for entry in settings["hooks"].get(event, [])
+            for h in entry.get("hooks", []) if token in h.get("command", "")]
+
+
+def test_stale_hook_command_is_replaced_not_appended(host):
+    """A monition hook entry is identified by its subcommand token: when the
+    guarded command changes between versions, sync replaces the stale entry
+    instead of appending the new one beside it."""
+    init(host)
+    spath = os.path.join(host, ".claude", "settings.json")
+    with open(spath) as f:
+        settings = json.load(f)
+    for entry in settings["hooks"]["UserPromptSubmit"]:
+        for h in entry["hooks"]:
+            if "monition prompt-hook" in h["command"]:
+                h["command"] = "monition prompt-hook || true"  # older guard
+    with open(spath, "w") as f:
+        json.dump(settings, f)
+
+    changes = sync(host)
+    assert any("UserPromptSubmit (replaced)" in c for c in changes)
+    assert (_hook_commands(host, "UserPromptSubmit", "monition prompt-hook")
+            == [guarded_hook_command("prompt-hook")])
+
+
+def test_accumulated_stale_duplicates_collapse_to_one(host):
+    """Pre-fix repos may carry a stale entry beside a current one; the merge
+    collapses them to exactly one current entry and touches nothing else."""
+    init(host)
+    spath = os.path.join(host, ".claude", "settings.json")
+    with open(spath) as f:
+        settings = json.load(f)
+    foreign = {"hooks": [{"type": "command", "command": "echo unrelated"}]}
+    settings["hooks"]["SessionStart"] = [
+        {"hooks": [{"type": "command", "command": "monition session-brief"}]},
+        foreign,
+        {"hooks": [{"type": "command",
+                    "command": guarded_hook_command("session-brief")}]},
+    ]
+    with open(spath, "w") as f:
+        json.dump(settings, f)
+
+    sync(host)
+    assert (_hook_commands(host, "SessionStart", "monition session-brief")
+            == [guarded_hook_command("session-brief")])
+    with open(spath) as f:
+        merged = json.load(f)
+    assert foreign in merged["hooks"]["SessionStart"]  # unrelated untouched
+
+
+def test_current_hooks_are_left_alone(host):
+    """Idempotence survives the replace logic: a second sync changes nothing."""
+    init(host)
+    spath = os.path.join(host, ".claude", "settings.json")
+    before = open(spath).read()
+    changes = sync(host)
+    assert not any("hook" in c for c in changes if not c.startswith("no changes"))
+    assert open(spath).read() == before
+
+
 def test_with_dump_hook_installs_pre_commit(host):
     init(host, with_dump_hook=True)
     hook = os.path.join(host, ".git", "hooks", "pre-commit")

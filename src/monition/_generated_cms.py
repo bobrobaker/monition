@@ -43,6 +43,18 @@ You are mining this session for takeaways. The store's semantics live in
      session for evidence the injected `one_liner` (it fired at `trigger_context` /
      `situation`) actually mattered: it **changed an action**, was **visibly ignored**,
      or was **contradicted** by what you did.
+     An **irrelevant fire is noise regardless of trigger breadth** — every injected line
+     dilutes context, so "it fired on a context it doesn't apply to" is itself the
+     evidence: the dilution *is* the cost, and the suppress gate can only learn to quiet
+     a serial diluter from these labels. A precise trigger (`edit_path` / a
+     specific-context match) over-firing is noise per-firing, as before. For a broad /
+     `on_demand` **batch dump** where the whole batch was ignored, rate the batch `noise`
+     in bulk with one shared citation ("session-opening dump, none applied") — bulk noise
+     labels are mechanical and sit outside the ~15 budget, which guards
+     individually-evidenced labels. The distinction that still matters is *applied vs.
+     didn't apply*, not broad vs. precise: a row that fired on a genuinely matching
+     moment where you already complied is a true positive, not noise — leave it unrated
+     (or `helpful` if it visibly shaped the action).
    - **Propose a rating ONLY where the session evidences it**, with a mandatory one-line
      citation of *what in this session* shows it. **No evidence → no rating** — never pad
      to hit coverage; an unsupported `helpful` is directional bias in the eval set, worse
@@ -100,8 +112,10 @@ You are mining this session for takeaways. The store's semantics live in
 3. For each store-routed candidate, draft the full row: `kind` (gotcha/rule/preference),
    `trigger_kind` + `trigger_spec` (*when should this fire?* — the design decision;
    edit_path glob, session_start, or on_demand), `one_liner` (what gets injected —
-   make it a trap-warning, not a description), `full_content` (the why + the
-   workaround), `source` (session/commit).
+   make it a trap-warning, not a description, and keep it **≤150 chars**: every char
+   is paid on every fire, and `monition show <id>` carries the depth; `monition add`
+   hard-rejects past 250), `full_content` (the why + the workaround), `source`
+   (session/commit).
 4. **Show the proposed rows and get acceptance before inserting** (consent gate).
 5. Insert accepted rows (`monition add …`), then snapshot the store:
    `monition commit -m "mine: <session topic>"`. The store is the hub at the landing
@@ -121,11 +135,12 @@ METHOD_LESSON_ROUTING = r"""# Lesson routing — where a mined lesson lands
 codification (`/codify`) — after the lesson is drafted, before the consent-gate
 proposal. Output: a destination plus one line of reasoning, shown at the gate.
 
-**Version:** routing v3 (2026-06-20). This is the canonical text; monition's
+**Version:** routing v4 (2026-07-01). This is the canonical text; monition's
 mine-session skill template carries a domain-stripped copy (confer resolution,
 2026-06-12). Bump this version on any change to the tests and hand off to
 monition once — `monition sync` propagates from there. (v2: test 4 names the three
-CLAUDE.md scopes. v3: the re-injection precondition below.) The `routing vN` token on
+CLAUDE.md scopes. v3: the re-injection precondition. v4: the scope+audience split
+extended to skill files in test 4.) The `routing vN` token on
 this line is a **parsed contract**: monition runs a dev-only parity test that reads it
 and fails when its mirrored `ROUTING_VERSION` has fallen behind — so keep the
 `**Version:** routing vN` format stable, and a bump here is the signal to re-strip.
@@ -174,6 +189,13 @@ row (test 3): it is the only tier with an eval loop, and it retires cleanly.
      un-committed local file is neither shared nor reliably versioned. So private,
      repo-scoped *contextual* guidance about the machinery → a **store row** (test 3),
      which is private-but-versioned (the store's own history) and fires by reach/origin.
+
+   The same **scope + audience** split governs skill *files*, not just CLAUDE.md lines:
+   a skill that depends on machine-local infrastructure (an absolute path, a personal
+   store, an installed adviser) belongs in the **global** skill layer (`~/.claude/skills/`),
+   not a forkable repo's `.claude/skills/`. Global takes precedence over project-local, so
+   the enriched copy wins automatically — no per-repo coordination, and no machine-local
+   detail leaks into what a forker inherits.
 5. **Mechanical shadow.** If violating X is mechanically checkable and unambiguous,
    add a linter check (ERROR) or hook alongside whatever prose landed above;
    ambiguous shadows are WARN. For semantic artifacts — shipped prompts, rubrics,

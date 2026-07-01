@@ -242,6 +242,70 @@ clause the phase paused with the finding recorded; no integration on an unproven
 
 ---
 
+### Phase 6 — Violation signatures + firing-evidence capture (the recall column)
+
+**Status:** planned (framed 2026-07-01,
+`docs/decisions/2026-07-01-row-lifecycle-pr-framing-and-mutation-track.md`).
+Prerequisite for Phase 7 — sequencing is load-bearing: mutation without this signal
+mutates on ~8%-coverage vibes.
+
+**Deliverable:** make a row's ground truth observable so its confusion matrix has a
+false-negative column. (a) An optional **violation signature** per row — a
+machine-checkable probe (regex/check over transcript or diff) for the failure the row
+warns about; authored at mine time for rows where one exists, never mandatory. (b) A
+post-session (or Stop-hook-adjacent, fail-open) evaluator that classifies sessions
+into fired∧avoided / fired∧hit / **not-fired∧hit**, logging the third as the
+trigger-broadening signal ratings structurally cannot produce. (c) Firing rows carry
+the **full matched evidence** (the text/path/tool-call the trigger matched on), not a
+lossy preview — the training substrate for Phase 7. The autoflag corpus
+(CMS `tools/flag_corpus.py`) is the in-house proof of the transcript-signature
+pattern.
+
+**Design constraints:** signatures are data on the row (the disclosure machinery
+stays dumb); evaluation is offline/fail-open, never on the blocking hook path; a row
+without a signature simply has no FN column (degrades to today's precision-only
+view).
+
+**Exit:** ≥1 real not-fired∧hit event captured and surfaced in `monition report` /
+the rating pass; firings verifiably store full match evidence.
+
+---
+
+### Phase 7 — The mutation engine (rows improve, not just fire-or-die)
+
+**Status:** planned (same framing decision). Gated on Phase 6 signal actually
+accumulating.
+
+**Deliverable:** rows mutate along the determinism ladder instead of only firing or
+dying. (a) **Trigger-module abstraction**: a row's trigger is a swappable, composable
+module (keyword / glob / semantic / tool-call / state probe; layered combinations);
+includes the new trigger kinds as modules, e.g. PreToolUse tool-call patterns for
+"about to run X" rows. (b) **Mutation proposals as an audit-cadence read**: from
+FP (rated noise) + FN (signature) evidence, propose per-row: tighten / broaden /
+migrate down the ladder (semantic → keyword → glob → tool-call) / merge with a
+near-duplicate / **graduate** (fires nearly every session, consistently helpful →
+propose promotion to an always-on surface and retirement here) / **stale** (referents
+vanished → refresh or retire). Proposals go through the mine-session consent gate as
+row edits — the engine recommends, the human accepts. (c) **Per-row threshold
+calibration** as the semantic module's tunable parameter (`tune` becomes an actuator
+under the same P/R objective, replacing advisory text). (d) Batch-dump attribution:
+shared-cause noise batches attribute to the breadth/prompt layer first, per the
+06-18 Filter-not-Gate decision, before pushing any single row toward suppression.
+
+**Design constraints:** mutation = search over trigger-module space maximizing recall
+at a precision floor, preferring the most deterministic module at equal performance;
+module candidates judged with the spike's `layer_eval` discipline (rank-normalized
+conditional lift); no learned component ships without a B02-grade pre-registered
+gate. Every mutation is a consented row edit with provenance (old spec recorded), so
+`replay` can evaluate mutations counterfactually.
+
+**Exit:** at least one full lifecycle observed end-to-end on the live hub — a row
+born broad, tightened/migrated from evidence, and either graduated or stably
+high-precision — plus a measured injected-volume reduction at equal-or-better
+helpful-rate vs. the pre-mutation baseline.
+
+---
+
 ### Next
 
 Phase 5 (above) is the ongoing phase, dispatched 2026-06-21. Phase 4 exited

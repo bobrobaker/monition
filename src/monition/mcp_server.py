@@ -5,13 +5,16 @@ single `match_gotchas` tool. The MCP surface is never the backbone: the
 `edit_path` / `session_start` / `on_demand` hook executors are unaffected.
 Unlike the hooks, an explicit query is a pull, not unsolicited injection, so
 hits are NOT gated by the EV scorer — but each disclosure still logs a firing
-so `monition rate` works on the result.
+so `monition rate` works on the result. The injection cap DOES apply (the
+result still lands in the context window); a capped result carries a "+N
+suppressed" trailer, and `monition query` remains the uncapped escape hatch.
 
 The `mcp` dependency (install via `monition[mcp]`) is imported lazily inside
 `serve()`; the handler logic below is plain Python so it tests without it.
 Tool errors never propagate: the handler returns a message string on any
 failure (same fail-open posture as the hooks).
 """
+from .hooks import _log as _hook_log
 from .store_write import WriteStore, resolve_store_path, current_repo
 
 
@@ -24,7 +27,12 @@ def match_gotchas_impl(query, store_path=None):
             return "No Monition store found (not in an initialized repo)."
         repo = current_repo()
         store = WriteStore(path)
-        hits = json.loads(store.on_demand_match(query, current_repo=repo))
+        res = json.loads(store.on_demand_match(query, current_repo=repo))
+        hits, capped = res["hits"], res["capped"]
+        if capped:
+            # never a silent truncation: note the cap in the state log too
+            _hook_log(f"[capped] {capped} semantic hit(s) over the injection"
+                      " cap (mcp match_gotchas)")
         lines = []
         for h in hits:
             firing = store.fire(str(h["id"]), "on_demand", None, query[:200],
@@ -33,10 +41,14 @@ def match_gotchas_impl(query, store_path=None):
             lines.append(f"[t{h['id']}/f{fid}] {h['one_liner']}")
         if not lines:
             return "No matching gotchas."
-        return (
+        out = (
             "Matching gotchas (full text: monition show <t-id>; "
             "rate: monition rate <f-id> helpful|noise):\n" + "\n".join(lines)
         )
+        if capped:
+            out += (f"\n(+{capped} more suppressed by cap — "
+                    f"monition query \"...\" shows all)")
+        return out
     except Exception as e:
         return f"Gotcha lookup unavailable: {e}"
 

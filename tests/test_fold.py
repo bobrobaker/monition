@@ -95,7 +95,9 @@ def test_folded_hub_respects_reach_filter(tmp_path):
     ins.fold_store(a, hub)
     ins.fold_store(b, hub)
     ws = WriteStore(hub)
-    from_a = {h["one_liner"] for h in json.loads(ws.on_demand_match("x", current_repo=origin_a))}
+    from_a = {h["one_liner"] for h in
+              json.loads(ws.on_demand_match("x", current_repo=origin_a))["hits"]}
     assert from_a == {"a-proj", "shared-gen"}                 # A's project + general; not b-proj
-    from_b = {h["one_liner"] for h in json.loads(ws.on_demand_match("x", current_repo=origin_b))}
+    from_b = {h["one_liner"] for h in
+              json.loads(ws.on_demand_match("x", current_repo=origin_b))["hits"]}
     assert from_b == {"b-proj", "shared-gen"}                 # B's project + general; not a-proj
