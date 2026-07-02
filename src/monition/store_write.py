@@ -2,21 +2,20 @@
 
 A characterization port of CMS `tools/takeaway.py` (the oracle until the B06
 cutover): same SQL, same matching semantics, same output strings. Contract
-sections binding this module: `trigger_spec` coordinate systems (per-pattern
-comma split + strip + fnmatch against the repo-relative path) and Dedup
-semantics (at most one disclosure per takeaway per session, deduped by
-querying `firings`).
+sections binding this module: `trigger_spec` coordinate systems (the matching
+itself is executed by the trigger modules in `modules.py` — the matchers here
+own row selection, hit assembly, dedup, and the cap) and Dedup semantics (at
+most one disclosure per takeaway per session, deduped by querying `firings`).
 
 All writes flow through WriteStore, which inherits the reader's fingerprint
 validation — no write happens against a store that fails the v2 contract.
 """
-import fnmatch
 import json
 import os
 import re
 import subprocess
 
-from . import session_state
+from . import modules, session_state
 from .store import Store, StoreContractError
 
 # Injection cap: unbounded semantic matching injected 41-75 rows (~6k tokens)
@@ -75,6 +74,34 @@ def validate_signature(raw):
     return json.dumps(spec)
 
 
+TRIGGER_KINDS = ("edit_path", "session_start", "on_demand", "tool_call")
+
+
+def validate_tool_call_spec(raw):
+    """Authoring gate for the v8 tool_call spec (contract §trigger_spec
+    coordinate systems): one JSON object with a non-empty "tool", a non-empty
+    "field", and a non-empty "contains" list of non-empty strings. Validated
+    at write time so the module's read-side fail-open stays the exception
+    path. Returns the normalized JSON string."""
+    try:
+        spec = json.loads(raw)
+    except (TypeError, ValueError) as e:
+        raise StoreContractError(f"tool_call trigger_spec is not valid JSON: {e}")
+    if not isinstance(spec, dict):
+        raise StoreContractError("tool_call trigger_spec must be a JSON object")
+    for key in ("tool", "field"):
+        if not spec.get(key) or not isinstance(spec[key], str):
+            raise StoreContractError(
+                f'tool_call trigger_spec needs a non-empty "{key}" string')
+    contains = spec.get("contains")
+    if (not contains or not isinstance(contains, list)
+            or not all(isinstance(n, str) and n for n in contains)):
+        raise StoreContractError(
+            'tool_call trigger_spec needs a non-empty "contains" list of '
+            'non-empty strings')
+    return json.dumps(spec)
+
+
 def current_repo():
     """Absolute host repo root: $CLAUDE_PROJECT_DIR (set for hook commands),
     falling back to `git rev-parse --show-toplevel` from cwd. None when neither
@@ -104,30 +131,11 @@ def resolve_store_path():
     return os.path.join(root, "monition") if root else None
 
 
-def reach_clause(repo):
-    """SQL predicate gating *where* a row fires: `general` reach fires in any repo,
-    `project` only where `origin_repo` equals the current repo.
-
-    `repo is None` means the caller has no repo context — the reach filter is then
-    **not applied** (fail-open, legacy behavior). Every auto-injection hot path (the
-    hooks) supplies its repo, so the gate is live where leakage would be silent; the
-    only callers that can pass None are explicit pulls (cli `query`, mcp
-    `match_gotchas`) with no detectable repo, where returning the unfiltered set is
-    a transparent "you asked, here's everything."
-    """
-    if repo is None:
-        return ""
-    # `origin_repo IS NULL` fires anywhere: a project row that never declared its
-    # repo is under-specified, so fail-open rather than silently suppress (the
-    # store's NULL-is-missing stance). Real v6 project rows always carry origin_repo
-    # (add() stamps the current repo; migrate backfills it), so isolation holds for
-    # every properly-specified row — only malformed/legacy NULLs fire broadly.
-    return (f" AND (reach = 'general' OR origin_repo IS NULL"
-            f" OR origin_repo = {val(repo)})")
-
-
 def esc(s):
-    return s.replace("\\", "\\\\").replace("'", "\\'")
+    """MySQL/Dolt-DIALECT escaping — for Dolt-only paths (init_sync's fold).
+    Store methods must use self._val instead: SQLite treats backslashes
+    literally, so this corrupts values on SQLite stores."""
+    return s.replace("\\", "\\\\").replace("'", "''")
 
 
 def val(s):
@@ -214,6 +222,29 @@ def _cap_hits(lexical, semantic):
 class WriteStore(Store):
     """Store opened for the lifecycle commands; contract-validated like the reader."""
 
+    def _reach_clause(self, repo):
+        """SQL predicate gating *where* a row fires: `general` reach fires in
+        any repo, `project` only where `origin_repo` equals the current repo.
+
+        `repo is None` means the caller has no repo context — the reach filter
+        is then **not applied** (fail-open, legacy behavior). Every
+        auto-injection hot path (the hooks) supplies its repo, so the gate is
+        live where leakage would be silent; the only callers that can pass
+        None are explicit pulls (cli `query`, mcp `match_gotchas`) with no
+        detectable repo, where returning the unfiltered set is a transparent
+        "you asked, here's everything."
+        """
+        if repo is None:
+            return ""
+        # `origin_repo IS NULL` fires anywhere: a project row that never
+        # declared its repo is under-specified, so fail-open rather than
+        # silently suppress (the store's NULL-is-missing stance). Real v6
+        # project rows always carry origin_repo (add() stamps the current
+        # repo; migrate backfills it), so isolation holds for every
+        # properly-specified row — only malformed/legacy NULLs fire broadly.
+        return (f" AND (reach = 'general' OR origin_repo IS NULL"
+                f" OR origin_repo = {self._val(repo)})")
+
     def add(self, kind, trigger_kind, one_liner, trigger_spec=None,
             full_content=None, scope=None, source=None, reach="project",
             origin_repo=None, violation_signature=None):
@@ -224,13 +255,15 @@ class WriteStore(Store):
             origin_repo = current_repo()
         if violation_signature is not None:
             violation_signature = validate_signature(violation_signature)
+        if trigger_kind == "tool_call":
+            trigger_spec = validate_tool_call_spec(trigger_spec)
         self._sql(
             "INSERT INTO takeaways (created, kind, scope, trigger_kind, trigger_spec,"
             " one_liner, full_content, source, reach, origin_repo,"
             " violation_signature) VALUES (NOW(), "
-            f"{val(kind)}, {val(scope)}, {val(trigger_kind)}, {val(trigger_spec)},"
-            f" {val(one_liner)}, {val(full_content)}, {val(source)}, {val(reach)},"
-            f" {val(origin_repo)}, {val(violation_signature)})"
+            f"{self._val(kind)}, {self._val(scope)}, {self._val(trigger_kind)}, {self._val(trigger_spec)},"
+            f" {self._val(one_liner)}, {self._val(full_content)}, {self._val(source)}, {self._val(reach)},"
+            f" {self._val(origin_repo)}, {self._val(violation_signature)})"
         )
         # each `dolt sql -q` is its own connection, so LAST_INSERT_ID() is useless here
         row = self._sql("SELECT MAX(id) AS id FROM takeaways")
@@ -248,9 +281,89 @@ class WriteStore(Store):
                       f" WHERE id = {iid(id_)}")
             return f"cleared violation signature on takeaway {rows[0]['id']}"
         normalized = validate_signature(signature)
-        self._sql(f"UPDATE takeaways SET violation_signature = {val(normalized)}"
+        self._sql(f"UPDATE takeaways SET violation_signature = {self._val(normalized)}"
                   f" WHERE id = {iid(id_)}")
         return f"set violation signature on takeaway {rows[0]['id']}"
+
+    def set_trigger(self, id_, trigger_kind, trigger_spec=None, source=None):
+        """Migrate a row along the determinism ladder — the `migrate_kind`
+        mutation verb (contract §Trigger modules / §mutations). A narrow,
+        consented actuator: rewrites trigger_kind + trigger_spec atomically,
+        recording both old values in one event-grain `mutations` row before
+        the write. Never called automatically — every use is a human-accepted
+        proposal (B01: no auto-apply anywhere)."""
+        if trigger_kind not in TRIGGER_KINDS:
+            raise StoreContractError(
+                f"unknown trigger_kind {trigger_kind!r} — one of: "
+                + ", ".join(TRIGGER_KINDS))
+        if trigger_kind == "session_start":
+            if trigger_spec:
+                raise StoreContractError(
+                    "session_start takes no trigger_spec (spec is ignored by "
+                    "contract — refuse rather than store dead data)")
+        elif trigger_kind == "tool_call":
+            trigger_spec = validate_tool_call_spec(trigger_spec)
+        elif not trigger_spec:
+            raise StoreContractError(
+                f"{trigger_kind} requires a non-empty trigger_spec")
+        rows = self._sql(
+            "SELECT id, trigger_kind, trigger_spec FROM takeaways"
+            f" WHERE id = {iid(id_)}")
+        if not rows:
+            raise StoreContractError(f"no takeaway with id {id_}")
+        old_kind = rows[0]["trigger_kind"]
+        old_spec = rows[0].get("trigger_spec")
+        changes = json.dumps({
+            "trigger_kind": {"old": old_kind, "new": trigger_kind},
+            "trigger_spec": {"old": old_spec, "new": trigger_spec},
+        })
+        self._sql(
+            f"UPDATE takeaways SET trigger_kind = {self._val(trigger_kind)},"
+            f" trigger_spec = {self._val(trigger_spec)} WHERE id = {iid(id_)}")
+        self._sql(
+            "INSERT INTO mutations (takeaway_id, mutated_at, verb, changes,"
+            f" source) VALUES ({iid(id_)}, NOW(), 'migrate_kind',"
+            f" {self._val(changes)}, {self._val(source)})"
+        )
+        return (f"takeaway {rows[0]['id']} migrated {old_kind} -> "
+                f"{trigger_kind} — mutation logged")
+
+    def set_threshold(self, id_, value, source=None):
+        """Set or clear (value=None) a row's per-row semantic threshold — the
+        `tune` mutation verb (contract §Trigger modules / §mutations). A
+        narrow, consented actuator in the set_signature pattern; every call
+        writes an event-grain `mutations` row with the old value captured
+        BEFORE the update, so replay can reconstruct the prior spec. Domain
+        [0,1] (contract; NULL = global SIM_THRESHOLD). The row must be
+        on_demand — no other kind has a semantic module to tune."""
+        if value is not None:
+            value = float(value)
+            if not 0.0 <= value <= 1.0:
+                raise StoreContractError(
+                    f"sem_threshold must be in [0,1], got {value}")
+        rows = self._sql(
+            "SELECT id, trigger_kind, sem_threshold FROM takeaways"
+            f" WHERE id = {iid(id_)}")
+        if not rows:
+            raise StoreContractError(f"no takeaway with id {id_}")
+        if rows[0]["trigger_kind"] != "on_demand":
+            raise StoreContractError(
+                f"takeaway {rows[0]['id']} is {rows[0]['trigger_kind']!r} — "
+                "sem_threshold tunes the on_demand semantic module only")
+        old = rows[0].get("sem_threshold")
+        old = float(old) if old is not None else None
+        changes = json.dumps({"sem_threshold": {"old": old, "new": value}})
+        new_sql = "NULL" if value is None else repr(value)
+        self._sql(f"UPDATE takeaways SET sem_threshold = {new_sql}"
+                  f" WHERE id = {iid(id_)}")
+        self._sql(
+            "INSERT INTO mutations (takeaway_id, mutated_at, verb, changes,"
+            f" source) VALUES ({iid(id_)}, NOW(), 'tune', {self._val(changes)},"
+            f" {self._val(source)})"
+        )
+        what = "cleared" if value is None else f"set to {value}"
+        return (f"sem_threshold on takeaway {rows[0]['id']} {what} "
+                f"(was {old}) — mutation logged")
 
     def log_violation(self, takeaway_id, session_id, evidence=None, repo=None):
         """One observed not-fired∧hit event. Idempotent per
@@ -263,14 +376,14 @@ class WriteStore(Store):
             raise StoreContractError(f"no takeaway with id {takeaway_id}")
         existing = self._sql(
             f"SELECT id FROM violations WHERE takeaway_id = {iid(takeaway_id)}"
-            f" AND session_id = {val(session_id)}"
+            f" AND session_id = {self._val(session_id)}"
         )
         if existing:
             return f"violation {existing[0]['id']} (already logged)"
         self._sql(
             "INSERT INTO violations (takeaway_id, detected_at, session_id,"
             f" evidence, repo) VALUES ({iid(takeaway_id)}, NOW(),"
-            f" {val(session_id)}, {val(evidence)}, {val(repo)})"
+            f" {self._val(session_id)}, {self._val(evidence)}, {self._val(repo)})"
         )
         row = self._sql("SELECT MAX(id) AS id FROM violations")
         return f"violation {row[0]['id']}"
@@ -278,7 +391,7 @@ class WriteStore(Store):
     def list_rows(self, status="active"):
         rows = self._sql(
             "SELECT id, kind, trigger_kind, trigger_spec, status, reach, one_liner"
-            f" FROM takeaways WHERE status = {val(status)} ORDER BY id"
+            f" FROM takeaways WHERE status = {self._val(status)} ORDER BY id"
         )
         lines = []
         for r in rows:
@@ -303,7 +416,7 @@ class WriteStore(Store):
         floor = session_state.compaction_floor(session)
         fired = self._sql(
             "SELECT DISTINCT takeaway_id FROM firings"
-            f" WHERE session_id = {val(session)} AND id > {int(floor)}"
+            f" WHERE session_id = {self._val(session)} AND id > {int(floor)}"
         )
         fired_ids = {r["takeaway_id"] for r in fired}
         return [r for r in rows if r["id"] not in fired_ids]
@@ -312,19 +425,16 @@ class WriteStore(Store):
         rows = self._sql(
             "SELECT id, one_liner, trigger_spec FROM takeaways"
             " WHERE status = 'active' AND trigger_kind = 'edit_path'"
-            + reach_clause(current_repo)
+            + self._reach_clause(current_repo)
         )
         hits = []
         for r in rows:
-            pattern = next(
-                (g.strip() for g in (r["trigger_spec"] or "").split(",")
-                 if fnmatch.fnmatch(path, g.strip())), None)
-            if pattern is not None:
+            evidence = modules.glob_match(r["trigger_spec"], path)
+            if evidence is not None:
                 hits.append({
                     "id": r["id"], "one_liner": r["one_liner"],
                     "trigger_spec": r.get("trigger_spec"),
-                    # v7 match evidence: which pattern hit, on which path
-                    "evidence": {"module": "glob", "pattern": pattern, "path": path},
+                    "evidence": evidence,
                 })
         return json.dumps(self._not_yet_fired(hits, session))
 
@@ -337,52 +447,25 @@ class WriteStore(Store):
         `cap=False` is the explicit-pull escape hatch (`monition query`):
         everything is returned and `capped` is 0."""
         rows = self._sql(
-            "SELECT id, one_liner, trigger_spec FROM takeaways"
+            "SELECT id, one_liner, trigger_spec, sem_threshold FROM takeaways"
             " WHERE status = 'active' AND trigger_kind = 'on_demand'"
-            + reach_clause(current_repo)
+            + self._reach_clause(current_repo)
         )
-        q = query.lower()
-
-        def lex_kw(r):
-            """The first keyword that hits, or None — the v7 match evidence."""
-            return next((kw.strip()
-                         for kw in (r.get("trigger_spec") or "").split(",")
-                         if kw.strip() and kw.strip().lower() in q), None)
-
         from . import trace
         trace.mark("match:sql_done")
         lexical, rest = [], []
         for r in rows:
-            kw = lex_kw(r)
-            if kw is not None:
+            evidence = modules.lexical_match(r.get("trigger_spec"), query)
+            if evidence is not None:
                 lexical.append({
                     "id": r["id"], "one_liner": r["one_liner"],
-                    "evidence": {"module": "lexical", "keyword": kw,
-                                 "query": query},
+                    "evidence": evidence,
                 })
             else:
                 rest.append(r)
         trace.mark("match:lexical_done")
-        semantic = []
-        if rest:
-            # fail-open: embeddings absent/broken → lexical-only is a valid result
-            try:
-                from . import embed
-                texts = [f'{r["one_liner"]} {r.get("trigger_spec") or ""}'
-                         for r in rest]
-                sims = embed.semantic_scores(query, texts)
-                trace.mark("match:semantic_done")
-                ranked = sorted(
-                    (p for p in zip(sims, rest) if p[0] >= embed.SIM_THRESHOLD),
-                    key=lambda p: p[0], reverse=True,
-                )
-                semantic = [{"id": r["id"], "one_liner": r["one_liner"],
-                             "evidence": {"module": "semantic",
-                                          "score": round(float(s), 4),
-                                          "query": query}}
-                            for s, r in ranked]
-            except Exception:
-                pass
+        semantic = [{"id": r["id"], "one_liner": r["one_liner"], "evidence": ev}
+                    for r, ev in modules.semantic_rank(rest, query)]
         # dedup before capping so already-disclosed hits don't consume cap slots
         lexical = self._not_yet_fired(lexical, session)
         semantic = self._not_yet_fired(semantic, session)
@@ -392,11 +475,32 @@ class WriteStore(Store):
             hits, capped = lexical + semantic, 0
         return json.dumps({"hits": hits, "capped": capped})
 
+    def match_tool_call(self, tool_name, tool_input, session=None,
+                        current_repo=None):
+        """tool_call rows matching this execution moment (v8). Same shape as
+        match(): a JSON list of hit dicts with lossless evidence, per-session
+        dedup applied."""
+        rows = self._sql(
+            "SELECT id, one_liner, trigger_spec FROM takeaways"
+            " WHERE status = 'active' AND trigger_kind = 'tool_call'"
+            + self._reach_clause(current_repo)
+        )
+        hits = []
+        for r in rows:
+            evidence = modules.tool_call_match(
+                r.get("trigger_spec"), tool_name, tool_input)
+            if evidence is not None:
+                hits.append({
+                    "id": r["id"], "one_liner": r["one_liner"],
+                    "evidence": evidence,
+                })
+        return json.dumps(self._not_yet_fired(hits, session))
+
     def session_start(self, session=None, current_repo=None):
         rows = self._sql(
             "SELECT id, one_liner FROM takeaways"
             " WHERE status = 'active' AND trigger_kind = 'session_start'"
-            + reach_clause(current_repo)
+            + self._reach_clause(current_repo)
         )
         return json.dumps(self._not_yet_fired(rows, session))
 
@@ -419,16 +523,16 @@ class WriteStore(Store):
             "INSERT INTO firings (takeaway_id, fired_at, session_id, trigger_kind,"
             " trigger_context, git_sha, git_dirty, model, monition_version, situation,"
             " repo, match_evidence)"
-            f" VALUES ({iid(takeaway_id)}, NOW(), {val(session)},"
-            f" {val(trigger_kind)}, {val(context)}, {val(git_sha)},"
-            f" {bval(git_dirty)}, {val(model)}, {val(_monition_version())}, {val(situation)},"
-            f" {val(current_repo)}, {val(evidence_json)})"
+            f" VALUES ({iid(takeaway_id)}, NOW(), {self._val(session)},"
+            f" {self._val(trigger_kind)}, {self._val(context)}, {self._val(git_sha)},"
+            f" {bval(git_dirty)}, {self._val(model)}, {self._val(_monition_version())}, {self._val(situation)},"
+            f" {self._val(current_repo)}, {self._val(evidence_json)})"
         )
         row = self._sql("SELECT MAX(id) AS id FROM firings")
         return f"firing {row[0]['id']}"
 
     def rate(self, firing_id, outcome):
-        self._sql(f"UPDATE firings SET outcome = {val(outcome)} WHERE id = {iid(firing_id)}")
+        self._sql(f"UPDATE firings SET outcome = {self._val(outcome)} WHERE id = {iid(firing_id)}")
         return f"firing {firing_id} rated {outcome}"
 
     def retire(self, id_):
@@ -444,11 +548,10 @@ class WriteStore(Store):
         " evidence_count, cold_start, ev_score) VALUES "
     )
 
-    @staticmethod
-    def _decision_values(takeaway_id, session_id, decision,
+    def _decision_values(self, takeaway_id, session_id, decision,
                          evidence_count, cold_start, ev_score):
-        ev_val = val(f"{ev_score:.4f}") if ev_score is not None else "NULL"
-        return (f"({iid(takeaway_id)}, {val(session_id)}, NOW(), {val(decision)},"
+        ev_val = self._val(f"{ev_score:.4f}") if ev_score is not None else "NULL"
+        return (f"({iid(takeaway_id)}, {self._val(session_id)}, NOW(), {self._val(decision)},"
                 f" {int(evidence_count)}, {1 if cold_start else 0}, {ev_val})")
 
     def write_decision(self, takeaway_id, session_id, decision,
@@ -585,7 +688,7 @@ class WriteStore(Store):
         addition = one_liner if not full_content else f"{one_liner}\n{full_content}"
         merged = f"{existing}\n\n[re-learned] {addition}".strip()
         self._sql(
-            f"UPDATE takeaways SET full_content = {val(merged)}"
+            f"UPDATE takeaways SET full_content = {self._val(merged)}"
             f" WHERE id = {iid(takeaway_id)}")
         return f"merged into takeaway {takeaway_id}"
 

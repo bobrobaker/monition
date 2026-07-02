@@ -28,7 +28,7 @@ _REQUIRED = {
         "created": r"^datetime",
         "kind": r"^enum\('gotcha','rule','preference'\)$",
         "scope": r"^varchar",
-        "trigger_kind": r"^enum\('edit_path','session_start','on_demand'\)$",
+        "trigger_kind": r"^enum\('edit_path','session_start','on_demand','tool_call'\)$",
         "trigger_spec": r"^varchar",
         "one_liner": r"^varchar",
         "full_content": r"^text",
@@ -37,6 +37,7 @@ _REQUIRED = {
         "reach": r"^enum\('general','project'\)$",
         "origin_repo": r"^varchar",
         "violation_signature": r"^text",
+        "sem_threshold": r"^decimal",
     },
     "firings": {
         "id": r"^int",
@@ -71,6 +72,14 @@ _REQUIRED = {
         "evidence": r"^text",
         "repo": r"^varchar",
     },
+    "mutations": {
+        "id": r"^int",
+        "takeaway_id": r"^int",
+        "mutated_at": r"^datetime",
+        "verb": r"^varchar",
+        "changes": r"^text",
+        "source": r"^varchar",
+    },
 }
 
 _REQUIRED_SQLITE = {
@@ -88,6 +97,7 @@ _REQUIRED_SQLITE = {
         "reach": r"^TEXT$",
         "origin_repo": r"^TEXT$",
         "violation_signature": r"^TEXT$",
+        "sem_threshold": r"^NUMERIC$",
     },
     "firings": {
         "id": r"^INTEGER$",
@@ -122,6 +132,14 @@ _REQUIRED_SQLITE = {
         "evidence": r"^TEXT$",
         "repo": r"^TEXT$",
     },
+    "mutations": {
+        "id": r"^INTEGER$",
+        "takeaway_id": r"^INTEGER$",
+        "mutated_at": r"^TEXT$",
+        "verb": r"^TEXT$",
+        "changes": r"^TEXT$",
+        "source": r"^TEXT$",
+    },
 }
 
 FIRING_ELIGIBLE = ("active",)
@@ -146,6 +164,8 @@ class Takeaway:
     origin_repo: Optional[str]
     # v7 violation signature — None = no probe; the row has no FN column
     violation_signature: Optional[str] = None
+    # v8 per-row semantic threshold — None = global default (embed.SIM_THRESHOLD)
+    sem_threshold: Optional[float] = None
 
     @property
     def firing_eligible(self):
@@ -185,6 +205,20 @@ class Decision:
 
 
 @dataclass(frozen=True)
+class Mutation:
+    """One consented trigger-mutation event (v8). `changes` is the JSON
+    `{field: {"old": ..., "new": ...}}` record, old values captured before the
+    write. Never a firing and never rating evidence — consumers are the
+    proposal engine's audit view, report, and replay."""
+    id: int
+    takeaway_id: int
+    mutated_at: datetime
+    verb: str
+    changes: str
+    source: Optional[str]
+
+
+@dataclass(frozen=True)
 class Violation:
     """One observed not-fired∧hit event: the failure a row warns about occurred
     in a session where the row never fired. Never a firing — excluded from
@@ -220,6 +254,14 @@ class Store:
             raise StoreContractError(
                 f"query failed against {self.path}: {e}"
             ) from e
+
+    def _val(self, s):
+        """Dialect-correct nullable string literal, bound to THIS store's
+        backend. SQLite treats backslashes literally where MySQL escapes
+        them, so a store method must never use the module-level `val()`
+        (MySQL-dialect-only, kept for Dolt-only paths like the fold) — values
+        containing backslashes or quotes corrupt on SQLite otherwise."""
+        return "NULL" if s is None else self._backend.quote(s)
 
     def _detect_stale_schema(self):
         """Version-ladder detection, oldest→newest, so the migrate message names
@@ -271,6 +313,15 @@ class Store:
                 "`violations` (the recall column) — "
                 "run `monition migrate` to upgrade to v7"
             )
+        # The three v8 pieces migrate atomically too; a missing `mutations`
+        # table alone is not a version signal (per-indicator table guards).
+        mutations_present = bool(self._backend.describe("mutations"))
+        if ((takeaway_cols and "sem_threshold" not in takeaway_cols)
+                or (takeaway_cols and firing_cols and not mutations_present)):
+            raise StoreContractError(
+                "v7-schema store: lacks `sem_threshold`/`mutations` (the "
+                "mutation track) — run `monition migrate` to upgrade to v8"
+            )
 
     def _validate_schema(self):
         required = (
@@ -300,7 +351,7 @@ class Store:
         rows = self._sql(
             "SELECT id, created, kind, scope, trigger_kind, trigger_spec,"
             " one_liner, full_content, source, status, reach, origin_repo,"
-            " violation_signature"
+            " violation_signature, sem_threshold"
             " FROM takeaways ORDER BY id"
         )
         return [
@@ -311,6 +362,8 @@ class Store:
                 full_content=r.get("full_content"), source=r.get("source"),
                 status=r["status"], reach=r["reach"], origin_repo=r.get("origin_repo"),
                 violation_signature=r.get("violation_signature"),
+                sem_threshold=(float(r["sem_threshold"])
+                               if r.get("sem_threshold") is not None else None),
             )
             for r in rows
         ]
@@ -365,6 +418,27 @@ class Store:
                 f"decisions reference missing takeaways (decision ids {orphans})"
             )
         return decisions
+
+    def mutations(self):
+        rows = self._sql(
+            "SELECT id, takeaway_id, mutated_at, verb, changes, source"
+            " FROM mutations ORDER BY id"
+        )
+        mutations = [
+            Mutation(
+                id=r["id"], takeaway_id=r["takeaway_id"],
+                mutated_at=_parse_dt(r["mutated_at"]), verb=r["verb"],
+                changes=r["changes"], source=r.get("source"),
+            )
+            for r in rows
+        ]
+        known = {t.id for t in self.takeaways()}
+        orphans = [m.id for m in mutations if m.takeaway_id not in known]
+        if orphans:
+            raise StoreContractError(
+                f"mutations reference missing takeaways (mutation ids {orphans})"
+            )
+        return mutations
 
     def violations(self):
         rows = self._sql(

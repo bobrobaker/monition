@@ -198,21 +198,41 @@ def fire_hook():
         if store is None:
             return
         ti = data.get("tool_input") or {}
+        tool = str(data.get("tool_name") or "")
         fp = ti.get("file_path", "") or ""
-        if not fp.startswith(repo + os.sep):
-            return
-        rel = os.path.relpath(fp, repo)
         session = str(data.get("session_id", "unknown"))
-        # v5 situational excerpt: what the agent was about to write (Write `content`
-        # / Edit `new_string`), capped. None when the tool input carries neither.
-        edit = ti.get("content") or ti.get("new_string") or None
-        situation = edit[:SITUATION_CHARS] if edit else None
+        model = _session_model(data)
+        lines = []
 
-        hits = json.loads(store.match(rel, session, current_repo=repo))
-        trace.mark("matched")
-        lines = _disclose(store, hits, "edit_path", session, rel,
-                          _session_model(data), situation=situation,
-                          current_repo=repo)
+        # edit_path flow: only for file-bearing tools writing under the repo
+        if fp.startswith(repo + os.sep):
+            rel = os.path.relpath(fp, repo)
+            # v5 situational excerpt: what the agent was about to write (Write
+            # `content` / Edit `new_string`), capped. None when neither.
+            edit = ti.get("content") or ti.get("new_string") or None
+            situation = edit[:SITUATION_CHARS] if edit else None
+            hits = json.loads(store.match(rel, session, current_repo=repo))
+            trace.mark("matched")
+            lines += _disclose(store, hits, "edit_path", session, rel,
+                               model, situation=situation, current_repo=repo)
+
+        # tool_call flow (v8): execution-moment rows matching this tool call.
+        # One _disclose per flow (never per hit — a firings read per hit is
+        # the O(N) hook-path antipattern). context/situation are previews of
+        # the shared tool call; each hit's exact matched text is lossless in
+        # its match_evidence.
+        if tool:
+            tc_hits = json.loads(store.match_tool_call(
+                tool, ti, session, current_repo=repo))
+            trace.mark("tool_matched")
+            if tc_hits:
+                matched = tc_hits[0]["evidence"].get("matched") or ""
+                lines += _disclose(
+                    store, tc_hits, "tool_call", session,
+                    f"{tool}: {matched}"[:200], model,
+                    situation=matched[:SITUATION_CHARS] or None,
+                    current_repo=repo)
+
         trace.mark("disclosed")
         if not lines:
             return

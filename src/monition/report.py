@@ -72,6 +72,10 @@ def render(store):
         lines.append("Recommendations:")
         for a in recs:
             lines.append(f"  t{a.takeaway_id}: {a.recommendation}")
+            if a.noise_batch:
+                lines.append(
+                    f"      {a.noise} noise ({a.noise_batch} in batch dumps "
+                    "— shared cause)")
             for ctx in a.noise_contexts:
                 lines.append(f"      noise on: {ctx}")
             for ctx in a.helpful_contexts:

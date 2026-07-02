@@ -1,7 +1,7 @@
 # Bucket B02: Module refactor, behavior-locked
 
 Parent: ../workstream.md
-State: later
+State: done
 Goal for session: Matchers behind the Module seam; matching behavior unchanged.
 Target duration: 45 min
 Context budget: Read parent + this bucket + required touchpoints only.
@@ -21,15 +21,15 @@ Context budget: Read parent + this bucket + required touchpoints only.
 
 ## Tasks
 
-- [ ] Step 0 inspection gate: read the actual matcher implementations before
+- [x] Step 0 inspection gate: read the actual matcher implementations before
       writing any module code (multi-variant rule).
-- [ ] Characterization tests FIRST, exact-value level: for a fixture store,
+- [x] Characterization tests FIRST, exact-value level: for a fixture store,
       assert the full hit sets (ids AND evidence dicts) of `match()`,
       `on_demand_match()` (lexical-forced and with a stubbed semantic scorer),
       and `session_start()` — exact sets, not spot checks.
-- [ ] Extract modules per B01's design; matchers delegate; hit dicts (incl.
+- [x] Extract modules per B01's design; matchers delegate; hit dicts (incl.
       `evidence`) byte-identical.
-- [ ] The injection cap, reach filter, `_not_yet_fired` dedup, and EV-scorer
+- [x] The injection cap, reach filter, `_not_yet_fired` dedup, and EV-scorer
       call sites stay OUTSIDE modules — a module answers matching only.
 
 ## Required touchpoints
@@ -63,11 +63,28 @@ Context budget: Read parent + this bucket + required touchpoints only.
 
 ## Done criteria
 
-- [ ] Tasks complete.
-- [ ] Validation passes.
-- [ ] Bucket `Updates` section records discoveries/gotchas/handoff.
-- [ ] Parent workstream progress updated.
+- [x] Tasks complete.
+- [x] Validation passes.
+- [x] Bucket `Updates` section records discoveries/gotchas/handoff.
+- [x] Parent workstream progress updated.
 
 ## Updates
 
 - [2026-07-01 20:11] Created. Handoff: none yet. Gotchas: none yet.
+- [2026-07-02] Done. `src/monition/modules.py` created (`glob_match`,
+  `lexical_match`, `semantic_rank`); the three matchers delegate; hit dicts
+  byte-identical (locked by `tests/test_module_parity.py`, 8 exact-value
+  tests, green against pre-refactor code first, then post). Full suite
+  285 passed / 2 skipped (pre-existing dolt-conformance skips).
+  Discoveries: `metrics.spec_matches` was a live re-implementation of glob
+  matching ("reproduce exactly" by copy) — folded onto `modules.glob_match`
+  in this bucket, the first assess-path==eval-path enforcement. Gotchas:
+  `semantic_rank` is batch-shaped (one embed call per query, never per row —
+  hook cold-path); `trace.mark("match:semantic_done")` moved inside the
+  module to preserve trace parity (marks only when scoring succeeded);
+  `session_start` delegates to nothing by design — the `always` module has no
+  per-row check, the select-all IS the module (documented in modules.py
+  docstring; no ceremonial call fabricated). Handoff to B03: per-row θ filter
+  goes inside `semantic_rank` (read `sem_threshold` off the row dict, NULL →
+  global) — the one edit surface the seam was built for; B03 also ships the
+  atomic v8 migration per B01's contract paragraph.

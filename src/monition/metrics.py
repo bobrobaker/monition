@@ -5,9 +5,11 @@ position made executable; the audit functions automate the manual
 rate-and-tighten loop. Per the contract, an unrated firing (outcome None) is
 missing data — it never enters a precision numerator or denominator.
 """
-import fnmatch
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+from . import modules
 
 # ---- EV vocabulary ---------------------------------------------------------
 
@@ -58,18 +60,51 @@ class TakeawayAudit:
     noise: int = 0
     unrated: int = 0
     precision: Optional[float] = None
+    # noise firings that arrived in a shared-cause batch (size >=
+    # BATCH_MIN_SIZE) — B04: attribution weight for B06, never removed from
+    # `noise` (the labels are honest data; the batch changes their weight in
+    # proposals, not their existence).
+    noise_batch: int = 0
     noise_contexts: list = field(default_factory=list)
     helpful_contexts: list = field(default_factory=list)
     recommendation: str = ""
 
 
 def spec_matches(trigger_spec, path):
-    """Reproduce the store executor's matching exactly: comma-split,
-    whitespace-strip, fnmatch per pattern (where * crosses '/')."""
-    return any(
-        fnmatch.fnmatch(path, g.strip())
-        for g in (trigger_spec or "").split(",")
+    """The store executor's matching, by construction: delegates to the glob
+    trigger module (assess-path == eval-path — same code, not a copy)."""
+    return modules.glob_match(trigger_spec, path) is not None
+
+
+# ---- batch attribution (B04) ------------------------------------------------
+
+# A firing group of this size or larger sharing one delivery moment is a
+# shared-cause batch: evidence about the prompt × breadth interaction, not N
+# independent row defects (decision 2026-06-18 §Update 2026-06-20 — one
+# meta-prompt lit 19 rows; hub-verified 2026-07-02: 80% of rated noise sits in
+# such batches).
+BATCH_MIN_SIZE = 2
+
+
+def batch_sizes(firings):
+    """firing_id -> size of its shared-cause group. The moment key is
+    (session_id, trigger_kind, trigger_context): the same prompt/path
+    delivered to N rows at once. Firings with a NULL session or context are
+    ungroupable (size 1) — NULL is not a shared cause. Truncated
+    trigger_context (200-char previews) can merge a re-asked identical prompt
+    later in the same session; acceptable for an annotation — the re-ask IS
+    the same cause."""
+    groups = Counter(
+        (f.session_id, f.trigger_kind, f.trigger_context)
+        for f in firings
+        if f.session_id is not None and f.trigger_context is not None
     )
+    return {
+        f.id: (groups[(f.session_id, f.trigger_kind, f.trigger_context)]
+               if f.session_id is not None and f.trigger_context is not None
+               else 1)
+        for f in firings
+    }
 
 
 def _recommend(a):
@@ -78,6 +113,10 @@ def _recommend(a):
             return "never fired — widen trigger_spec or fold into a doc"
         return ""
     if a.noise and not a.helpful:
+        if a.noise_batch == a.noise:
+            return ("all rated noise arrived in shared-cause batch dumps — "
+                    "attribute to the breadth/prompt layer first (2026-06-18); "
+                    "narrow or retire only if solo noise persists")
         return "all rated firings were noise — narrow trigger_spec or retire"
     if a.noise and a.helpful:
         return ("mixed ratings — narrow trigger_spec toward the helpful "
@@ -95,6 +134,7 @@ def audit(takeaways, firings):
             takeaway_id=t.id, kind=t.kind, trigger_kind=t.trigger_kind,
             trigger_spec=t.trigger_spec, status=t.status, reach=t.reach,
         )
+    sizes = batch_sizes(firings)
     for f in firings:
         a = by_id[f.takeaway_id]
         a.fires += 1
@@ -104,6 +144,8 @@ def audit(takeaways, firings):
                 a.helpful_contexts.append(f.trigger_context)
         elif f.outcome == "noise":
             a.noise += 1
+            if sizes[f.id] >= BATCH_MIN_SIZE:
+                a.noise_batch += 1
             if f.trigger_context:
                 a.noise_contexts.append(f.trigger_context)
         else:

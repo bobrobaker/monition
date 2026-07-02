@@ -15,7 +15,7 @@ import pytest
 
 from monition import dolt_server
 from monition.cli import main
-from monition.init_sync import V7_SCHEMA
+from monition.init_sync import V8_SCHEMA
 from monition.storage_backends import DoltBackend, _dolt_bin
 from monition.store_write import WriteStore
 
@@ -37,7 +37,7 @@ def dolt_store(tmp_path):
     """A throwaway Dolt store seeded with one takeaway (FK target for firings).
     Teardown always stops any sql-server this test left running."""
     path = str(tmp_path / "store")
-    build_dolt_store(path, [V7_SCHEMA, _SEED])
+    build_dolt_store(path, [V8_SCHEMA, _SEED])
     yield path
     dolt_server.stop(path)
 

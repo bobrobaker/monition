@@ -163,8 +163,11 @@ def main(argv=None):
                    version=f"monition {_installed_version()}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("report", help="audit a Monition store by path")
-    s.add_argument("store_path", help="directory of the live Dolt store")
+    s = sub.add_parser("report", help="audit a Monition store")
+    # positional kept for backward compatibility; --store matches every other verb
+    s.add_argument("store_path", nargs="?",
+                   help="store directory (positional, legacy form)")
+    s.add_argument("--store", help="store directory (default: <repo-root>/monition/)")
 
     def lifecycle(name, help=None):
         sp = sub.add_parser(name, help=help)
@@ -174,7 +177,8 @@ def main(argv=None):
     s = lifecycle("add")
     s.add_argument("--kind", required=True, choices=["gotcha", "rule", "preference"])
     s.add_argument("--trigger-kind", required=True,
-                   choices=["edit_path", "session_start", "on_demand"])
+                   choices=["edit_path", "session_start", "on_demand",
+                            "tool_call"])
     s.add_argument("--trigger-spec")
     s.add_argument("--one-liner", required=True)
     s.add_argument("--full-content")
@@ -216,6 +220,18 @@ def main(argv=None):
     s = lifecycle("rate")
     s.add_argument("firing_id")
     s.add_argument("outcome", choices=["helpful", "noise"])
+
+    s = lifecycle("set-trigger",
+                  help="migrate a row's trigger (kind + spec) along the "
+                       "determinism ladder — a consented mutation with "
+                       "event-grain provenance")
+    s.add_argument("takeaway_id")
+    s.add_argument("--kind", required=True, dest="new_trigger_kind",
+                   choices=["edit_path", "session_start", "on_demand",
+                            "tool_call"])
+    s.add_argument("--spec", help="new trigger_spec (JSON object for "
+                                  "tool_call; omit for session_start)")
+    s.add_argument("--source", help="provenance pointer for the mutation")
 
     s = lifecycle("set-signature",
                   help="set or clear a row's violation signature (JSON spec; "
@@ -300,7 +316,7 @@ def main(argv=None):
     s = sub.add_parser("sync", help="refresh hook entries + skills (hash-checked)")
     s.add_argument("--root", help="host repo root (default: git toplevel)")
 
-    s = sub.add_parser("migrate", help="migrate a store up to the current schema (v7), cumulative")
+    s = sub.add_parser("migrate", help="migrate a store up to the current schema (v8), cumulative")
     s.add_argument("--store", help="store directory (default: <repo-root>/monition/)")
     s.add_argument("--fold-into", metavar="HUB",
                    help="fold --store's rows into this Dolt hub (Dolt→Dolt) instead of "
@@ -313,6 +329,17 @@ def main(argv=None):
 
     s = sub.add_parser("tune", help="measure EV scorer quality vs always-fire baseline")
     s.add_argument("--store", help="store directory (default: <repo-root>/monition/)")
+
+    s = sub.add_parser(
+        "calibrate",
+        help="per-row semantic-threshold proposals from rated firings "
+             "(Filter-side; `tune` stays the Gate report)")
+    s.add_argument("--store", help="store directory (default: <repo-root>/monition/)")
+    s.add_argument("--apply", metavar="T_ID",
+                   help="apply the current proposal for this row (consent "
+                        "gate; writes mutations provenance)")
+    s.add_argument("--gate", action="store_true",
+                   help="run the pre-registered held-out gate (read-only)")
 
     s = sub.add_parser("query", help="match on_demand takeaways by keyword against query text")
     s.add_argument("query_text", metavar="query", help="free-text query string")
@@ -451,6 +478,28 @@ def main(argv=None):
                 )
             print(render_tune(Store(path)))
             return 0
+        if args.cmd == "calibrate":
+            from . import calibrate as cal
+            path = args.store or resolve_store_path()
+            if not path:
+                raise StoreContractError(
+                    "no store path: pass --store or run inside a git repo"
+                )
+            if args.apply:
+                # B03 gate NO-GO (2026-07-02): held-out noise reduction 75%
+                # but helpful_lost=1 broke the zero-loss bar. Advisory mode
+                # stays; apply is parked until a re-registered gate passes on
+                # fresh signal (see the B03 bucket Updates).
+                raise StoreContractError(
+                    "calibrate --apply is parked: the pre-registered B03 gate "
+                    "returned NO-GO (helpful_lost=1 on holdout, bar is 0). "
+                    "Proposals remain advisory; re-gate on fresh signal "
+                    "before enabling apply.")
+            elif args.gate:
+                print(cal.render_gate(cal.gate(Store(path))))
+            else:
+                print(cal.render_calibrate(cal.propose(Store(path))))
+            return 0
         if args.cmd == "export-firings":
             path = args.store or resolve_store_path()
             if not path:
@@ -512,7 +561,12 @@ def main(argv=None):
                                      current_repo=current_repo(), cap=False))
             return 0
         if args.cmd == "report":
-            print(render(Store(args.store_path)))
+            path = args.store or args.store_path or resolve_store_path()
+            if not path:
+                raise StoreContractError(
+                    "no store path: pass --store or run inside a git repo"
+                )
+            print(render(Store(path)))
         else:
             ws = _open(args)
             if args.cmd == "add":
@@ -527,6 +581,9 @@ def main(argv=None):
                                         args.session, args.context, current_repo=cr),
                 "rate": lambda: ws.rate(args.firing_id, args.outcome),
                 "set-signature": lambda: _run_set_signature(ws, args),
+                "set-trigger": lambda: ws.set_trigger(
+                    iid(args.takeaway_id), args.new_trigger_kind,
+                    args.spec, source=args.source),
                 "eval-session": lambda: _run_eval_session(ws, args, cr),
                 "log-recurrence": lambda: "takeaway {} recurrence logged (helpful firing {})".format(
                     args.takeaway_id,

@@ -53,6 +53,8 @@ EXPECTED_KEYS = {
     "fire_count", "rated_count", "precision", "rating_priority",
     # v7 lossless match evidence (additive, no schema_version bump)
     "match_evidence",
+    # B04 batch attribution (additive, no schema_version bump)
+    "batch_size",
 }
 DECISIONS_KEYS = {"decision", "ev_score", "cold_start", "evidence_count", "decided_at"}
 

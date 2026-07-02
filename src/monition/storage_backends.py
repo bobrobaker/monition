@@ -47,6 +47,13 @@ class SqliteBackend:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @staticmethod
+    def quote(s):
+        """SQL string literal in the SQLite dialect: quote-doubling only —
+        backslashes are LITERAL characters here (unlike MySQL), so they must
+        not be escaped or the stored value gains spurious backslashes."""
+        return "'" + str(s).replace("'", "''") + "'"
+
     def execute_sql(self, sql):
         sql = self._adapt(sql)
         conn = self._conn()
@@ -106,6 +113,13 @@ class DoltBackend:
         if check and out.returncode != 0:
             raise StorageBackendError(out.stderr.strip() or out.stdout.strip())
         return out
+
+    @staticmethod
+    def quote(s):
+        """SQL string literal in the MySQL/Dolt dialect: backslash is an
+        escape character in string literals, so double it; quotes via
+        doubling (valid MySQL, and avoids the \\' form SQLite can't parse)."""
+        return "'" + str(s).replace("\\", "\\\\").replace("'", "''") + "'"
 
     def execute_sql(self, sql):
         # Opt-in (MONITION_SQL_SERVER): ensure a resident sql-server owns the store

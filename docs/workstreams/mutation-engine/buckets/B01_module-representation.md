@@ -1,7 +1,7 @@
 # Bucket B01: Module representation design
 
 Parent: ../workstream.md
-State: next
+State: done
 Goal for session: Trigger-module spec designed, contracted, design-reviewed.
 Target duration: 45 min
 Context budget: Read parent + this bucket + required touchpoints only.
@@ -33,17 +33,17 @@ Context budget: Read parent + this bucket + required touchpoints only.
 
 ## Tasks
 
-- [ ] Design the module representation: keep `trigger_kind`/`trigger_spec` as
+- [x] Design the module representation: keep `trigger_kind`/`trigger_spec` as
       the storage (modules are an interpretation layer), or introduce a JSON
       module spec — decide with reasons, favoring zero migration for the 151
       live rows.
-- [ ] Decide where B03's per-row semantic threshold lives (row data, not module
+- [x] Decide where B03's per-row semantic threshold lives (row data, not module
       constant; NULL = global default `SIM_THRESHOLD`).
-- [ ] Decide the mutation-provenance representation (B06 consumes; replay must
+- [x] Decide the mutation-provenance representation (B06 consumes; replay must
       be able to reconstruct old spec).
-- [ ] Decide how `tool_call` (B05) enters `trigger_kind` (enum widening = v8 +
+- [x] Decide how `tool_call` (B05) enters `trigger_kind` (enum widening = v8 +
       migrate rung + reader fingerprint update — check the ladder gotcha).
-- [ ] Write the contract section(s); write the design-review decision doc
+- [x] Write the contract section(s); write the design-review decision doc
       (options, why rejected ones lost, supersession audit, contract section
       cited) per CLAUDE.md §Working here.
 
@@ -89,11 +89,35 @@ Context budget: Read parent + this bucket + required touchpoints only.
 
 ## Done criteria
 
-- [ ] Tasks complete.
-- [ ] Validation passes.
-- [ ] Bucket `Updates` section records discoveries/gotchas/handoff.
-- [ ] Parent workstream progress updated.
+- [x] Tasks complete.
+- [x] Validation passes.
+- [x] Bucket `Updates` section records discoveries/gotchas/handoff.
+- [x] Parent workstream progress updated.
 
 ## Updates
 
 - [2026-07-01 20:11] Created. Handoff: none yet. Gotchas: none yet.
+- [2026-07-01] Design drafted, docs written, **awaiting user acceptance** (the
+  consent gate — B02 stays blocked until accepted). Artifacts: contract
+  §Trigger modules + §mutations per-field meaning + v8 planned paragraph +
+  `sem_threshold` field row (all v8 material explicitly marked planned — v7
+  stays current); decision doc
+  `docs/decisions/2026-07-01-trigger-module-representation.md`.
+  Decisions: interpretation layer over existing columns (zero migration);
+  `sem_threshold` column (not microformat); event-grain `mutations` table
+  (verb explicit + `changes` JSON, backend-agnostic — Dolt history is audit
+  only); `tool_call` via enum widening, **v8 ships as one atomic migration at
+  B03** (all three pieces) to keep the version ladder unambiguous.
+  Discoveries: `on_demand` is already an implicit OR(lexical, semantic)
+  composition — the contract now names it; `_REQUIRED` pins the trigger_kind
+  enum exactly, so enum widening requires fingerprint + ladder-rung + migrate
+  in one release (conditional touchpoints read: store.py validator,
+  init_sync.py DDL chain). Handoff to B02: schema-free — wrap the three
+  matchers (`match`/`on_demand_match`/`session_start`, store_write.py:311-401)
+  behind the module seam with parity tests; no v8 dependency.
+  Handoff to B03: implement v8 atomically per the contract's planned
+  paragraph (sem_threshold + enum widening + mutations table + fingerprint +
+  `_detect_stale_schema` rung with per-indicator table guards + migrate rung,
+  Dolt and SQLite both).
+- [2026-07-02] User accepted the design — consent gate cleared, bucket done.
+  Decision doc status flipped to accepted. B02 unblocked.

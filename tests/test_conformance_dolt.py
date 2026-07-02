@@ -19,8 +19,8 @@ pytestmark = pytest.mark.skipif(
     reason="dolt binary not available",
 )
 
-# Use V7_SCHEMA (MySQL DDL) for Dolt fixture
-from monition.init_sync import V7_SCHEMA as DOLT_SCHEMA
+# Use V8_SCHEMA (MySQL DDL) for Dolt fixture
+from monition.init_sync import V8_SCHEMA as DOLT_SCHEMA
 
 
 @pytest.fixture(scope="module")
@@ -90,6 +90,18 @@ def test_dolt_add_fire_rate_round_trip(dolt_copy):
     assert t.one_liner == "dolt seam test"
     f = next(f for f in s.firings() if f.id == fid)
     assert f.outcome == "helpful"
+
+
+def test_dolt_roundtrips_backslashes_and_quotes(dolt_copy):
+    """The MySQL dialect needs backslash escaping where SQLite must not have
+    it (backend.quote seam) — same round-trip both conformance suites run."""
+    ws = WriteStore(dolt_copy)
+    gnarly = "it's a \\\"quoted\\\" backslash-y 'context'"
+    ws.fire("7", "on_demand", session="conf-q1", context=gnarly,
+            situation=gnarly)
+    f = next(x for x in Store(dolt_copy).firings() if x.session_id == "conf-q1")
+    assert f.trigger_context == gnarly
+    assert f.situation == gnarly
 
 
 # --- dump ---

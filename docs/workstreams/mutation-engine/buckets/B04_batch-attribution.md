@@ -1,7 +1,7 @@
 # Bucket B04: Batch-dump attribution
 
 Parent: ../workstream.md
-State: later
+State: done
 Goal for session: Shared-cause noise batches attribute to breadth, not rows.
 Target duration: 30 min
 Context budget: Read parent + this bucket + required touchpoints only.
@@ -25,11 +25,11 @@ Context budget: Read parent + this bucket + required touchpoints only.
 
 ## Tasks
 
-- [ ] Detect shared-cause batches from firing data (same session + same prompt
+- [x] Detect shared-cause batches from firing data (same session + same prompt
       moment; the injection already caps batches at 5+lexical, so bound is known).
-- [ ] Expose the annotation in `export_records` (additive keys) and the
+- [x] Expose the annotation in `export_records` (additive keys) and the
       per-row audit metrics (a noise count split: individual vs batch).
-- [ ] Report surface: per-row noise line distinguishes "N noise (M in batch
+- [x] Report surface: per-row noise line distinguishes "N noise (M in batch
       dumps)" so a human reading recommendations sees the shared cause.
 
 ## Required touchpoints
@@ -62,11 +62,33 @@ Context budget: Read parent + this bucket + required touchpoints only.
 
 ## Done criteria
 
-- [ ] Tasks complete.
-- [ ] Validation passes.
-- [ ] Bucket `Updates` section records discoveries/gotchas/handoff.
-- [ ] Parent workstream progress updated.
+- [x] Tasks complete.
+- [x] Validation passes.
+- [x] Bucket `Updates` section records discoveries/gotchas/handoff.
+- [x] Parent workstream progress updated.
 
 ## Updates
 
 - [2026-07-01 20:11] Created. Handoff: none yet. Gotchas: none yet.
+- [2026-07-02] Done. Grouping key verified against the live hub before
+  building (read-only): key = (session_id, trigger_kind, trigger_context);
+  real dumps up to 75 firings per prompt moment; **103/129 (80%) of rated
+  noise sits in size≥2 batches** — attribution dominates the noise signal.
+  NULL session/context = ungroupable (NULL is not a shared cause; verified 0
+  null-context multi-groups on the hub). Shipped read-side only:
+  `metrics.batch_sizes()` + `BATCH_MIN_SIZE=2`; `TakeawayAudit.noise_batch`
+  split; recommendation flips to "attribute to breadth/prompt layer first"
+  ONLY for the all-noise-all-batch case (conservative — mixed rows keep their
+  message); `export_records` gains additive `batch_size` (no schema_version
+  bump, matches the match_evidence precedent); report prints "N noise (M in
+  batch dumps — shared cause)". Validation: fixture asserts the exact
+  6-batch/2-individual split; full suite 299 passed / 2 skipped; live hub
+  report shows the split on all 64 batch-noise rows.
+  Gotchas: `monition report` takes a positional store_path (not `--store`) —
+  cost a few minutes of confusion; truncated 200-char trigger_context can
+  merge a re-asked identical prompt into one batch — accepted and documented
+  in the batch_sizes docstring (the re-ask is the same cause).
+  Handoff to B06: consume `batch_size` (export) / `noise_batch` (audit) to
+  discount shared-cause noise in per-row proposals; the Gate (scorer) still
+  consumes raw ratings by design — conditional touchpoint confirmed NOT
+  taken (pre-Phase-7 stance stands).

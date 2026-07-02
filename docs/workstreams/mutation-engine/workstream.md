@@ -1,6 +1,6 @@
 # Workstream: Mutation Engine (Phase 7)
 
-Progress: B01/module-representation-design next
+Progress: B01–B05 done (2026-07-02). B06/proposal-engine stays signal-gated — check FN volume + match_evidence accumulation (workstream signal gate) before activating.
 Blocked: none
 
 ## Objective
@@ -32,11 +32,11 @@ engine last, after live signal has accumulated. Frame:
 
 | B | State | File | Goal | Depends |
 |---|---|---|---|---|
-| B01 | next | buckets/B01_module-representation.md | Module spec design + contract section + design review | — |
-| B02 | later | buckets/B02_module-refactor.md | Matchers behind Module seam, behavior-locked | B01 |
-| B03 | later | buckets/B03_per-row-threshold.md | `tune` becomes per-row actuator (gated) | B02 |
-| B04 | later | buckets/B04_batch-attribution.md | Shared-cause noise batches attribute to breadth layer | — |
-| B05 | later | buckets/B05_tool-call-module.md | PreToolUse tool-call module + executor | B02 |
+| B01 | done | buckets/B01_module-representation.md | Module spec design + contract section + design review | — |
+| B02 | done | buckets/B02_module-refactor.md | Matchers behind Module seam, behavior-locked | B01 |
+| B03 | done | buckets/B03_per-row-threshold.md | `tune` becomes per-row actuator (gated) — NO-GO, apply parked; v8 shipped | B02 |
+| B04 | done | buckets/B04_batch-attribution.md | Shared-cause noise batches attribute to breadth layer | — |
+| B05 | done | buckets/B05_tool-call-module.md | PreToolUse tool-call module + executor | B02 |
 | B06 | later | buckets/B06_proposal-engine.md | Audit-cadence proposal read + consent-gated apply + provenance | B02, B04 |
 
 States: `next`, `active`, `blocked`, `done`, `deferred`, `later`.
@@ -99,3 +99,39 @@ on days of data (the sequencing constraint that gated this whole phase).
 
 - [2026-07-01 20:11] Initial plan created (Phase 6 closed same day; exit gate
   met via seed signatures + backfill sweep). Next: B01/module-representation-design.
+- [2026-07-01] B01 design drafted (docs only, zero code) — awaiting user
+  acceptance before B02. Cross-bucket decision with sequencing impact: **v8 is
+  one atomic migration landing at B03** (sem_threshold + `tool_call` enum
+  widening + `mutations` table together), so B05 and B06 consume v8 without
+  further schema touches and B02 stays schema-free. Contract now carries a
+  planned-v8 paragraph as B03's binding spec.
+- [2026-07-02] B01 accepted; B02 done same day (modules.py seam, parity-locked,
+  suite green). Cross-bucket discovery: `metrics.spec_matches` was a live glob
+  re-implementation — folded onto `modules.glob_match`; when touching other
+  offline consumers, grep for further matcher copies before writing new ones
+  (assess-path == eval-path is now enforceable by import, not by prose).
+- [2026-07-02] B03 done: v8 shipped (atomic — sem_threshold + tool_call enum +
+  mutations table; SQLite = takeaways rebuild, CHECKs can't be ALTERed), verb
+  surface split user-ratified (`calibrate` = Filter, `tune` stays Gate), and
+  the pre-registered gate returned **NO-GO** (75% holdout noise reduction but
+  helpful_lost=1 vs a zero bar) — apply parked, proposals advisory. Cross-
+  bucket consequences: B05 gets its enum value for free; B06 gets `mutations`
+  + a worked example of the pre-registered-gate discipline and the margin-less
+  threshold-rule failure mode. OPERATIONAL: hub must be migrated to v8 by the
+  user (editable install → hooks fail open until then).
+- [2026-07-02] Hub migrated to v8 (user-ran); hooks verified healthy. B04 done
+  same day: batch attribution is read-side live — hub measurement: 80% of
+  rated noise (103/129) is batch-borne, so B06's per-row proposals MUST
+  consume `batch_size`/`noise_batch` or they will over-punish rows for
+  prompt-layer noise. The signal-gate arithmetic on B06 should also count
+  batch-discounted noise, not raw noise.
+- [2026-07-02] B05 done: tool_call module live end-to-end — t91 consented
+  down the ladder (`migrate_kind` provenance) and fired live (f4459) the
+  same session. Cross-bucket lessons for B06: (a) substring needles match
+  MENTIONS as well as acts (f4459 fired on a heredoc containing "git push");
+  proposals should consider anchored needles. (b) Pre-existing dialect
+  quoting bug found+fixed at the backend seam (backend.quote) — SQLite
+  hosts corrupted values containing backslashes/apostrophes; apostrophe
+  prompts broke firing INSERTs silently. (c) `_merge_hook_entries` staleness
+  now keys on matcher too — matcher-only changes propagate via sync.
+  Workstream state: only B06 remains, behind its signal gate.

@@ -199,6 +199,74 @@ _V7_STEPS_SQLITE = [
 
 V7_SCHEMA_SQLITE = V6_SCHEMA_SQLITE + ";\n".join(_V7_STEPS_SQLITE) + ";\n"
 
+# v8: the mutation track (Phase 7, decision 2026-07-01-trigger-module-
+# representation). Three pieces, migrated ATOMICALLY (partial migration makes
+# the version ladder ambiguous — the v7 lesson): `sem_threshold` — the semantic
+# module's per-row parameter (NULL = global SIM_THRESHOLD); `trigger_kind`
+# widened with 'tool_call' (first post-v7 kind; JSON spec, executor lands B05);
+# `mutations` — event-grain provenance for every consented trigger mutation.
+_TAKEAWAYS_THRESHOLD_DDL = "ALTER TABLE takeaways ADD COLUMN sem_threshold decimal(5,4);"
+_TAKEAWAYS_TOOLCALL_DDL = (
+    "ALTER TABLE takeaways MODIFY COLUMN trigger_kind"
+    " enum('edit_path','session_start','on_demand','tool_call') NOT NULL;"
+)
+_MUTATIONS_DDL = """\
+CREATE TABLE mutations (
+  id int NOT NULL AUTO_INCREMENT,
+  takeaway_id int NOT NULL,
+  mutated_at datetime NOT NULL,
+  verb varchar(32) NOT NULL,
+  changes text NOT NULL,
+  source varchar(512),
+  PRIMARY KEY (id)
+);"""
+
+V8_SCHEMA = (
+    V7_SCHEMA + _TAKEAWAYS_THRESHOLD_DDL + _TAKEAWAYS_TOOLCALL_DDL + _MUTATIONS_DDL
+)
+
+# SQLite cannot ALTER a CHECK constraint, so widening the trigger_kind domain
+# is a table rebuild; the rebuilt table carries sem_threshold too, keeping the
+# v8 pieces atomic. Explicit ids in the copy keep sqlite_sequence correct
+# (AUTOINCREMENT updates it to the max inserted id).
+_V8_TAKEAWAYS_REBUILD_SQLITE = [
+    """CREATE TABLE takeaways_v8 (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('gotcha','rule','preference')),
+  scope TEXT,
+  trigger_kind TEXT NOT NULL CHECK(trigger_kind IN ('edit_path','session_start','on_demand','tool_call')),
+  trigger_spec TEXT,
+  one_liner TEXT NOT NULL,
+  full_content TEXT,
+  source TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','retired')),
+  reach TEXT NOT NULL DEFAULT 'project' CHECK(reach IN ('general','project')),
+  origin_repo TEXT,
+  violation_signature TEXT,
+  sem_threshold NUMERIC
+)""",
+    "INSERT INTO takeaways_v8 (id, created, kind, scope, trigger_kind,"
+    " trigger_spec, one_liner, full_content, source, status, reach,"
+    " origin_repo, violation_signature)"
+    " SELECT id, created, kind, scope, trigger_kind, trigger_spec, one_liner,"
+    " full_content, source, status, reach, origin_repo, violation_signature"
+    " FROM takeaways",
+    "DROP TABLE takeaways",
+    "ALTER TABLE takeaways_v8 RENAME TO takeaways",
+]
+_MUTATIONS_DDL_SQLITE = """CREATE TABLE mutations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  takeaway_id INTEGER NOT NULL,
+  mutated_at TEXT NOT NULL,
+  verb TEXT NOT NULL,
+  changes TEXT NOT NULL,
+  source TEXT
+)"""
+_V8_STEPS_SQLITE = _V8_TAKEAWAYS_REBUILD_SQLITE + [_MUTATIONS_DDL_SQLITE]
+
+V8_SCHEMA_SQLITE = V7_SCHEMA_SQLITE + ";\n".join(_V8_STEPS_SQLITE) + ";\n"
+
 _V1_STATUS = "enum('active','retired','upstream_candidate','mirrored')"
 _V2_STATUS = "enum('active','retired')"
 
@@ -262,7 +330,10 @@ def _merge_hook_entries(settings):
     changed = []
     hooks = settings.setdefault("hooks", {})
     wanted = [
-        ("PreToolUse", "Write|Edit", "fire-hook"),
+        # Write|Edit serves edit_path; Bash serves tool_call (v8). Every
+        # matcher widening costs a cold subprocess per matched call — widen
+        # only when a module consumes the tool.
+        ("PreToolUse", "Write|Edit|Bash", "fire-hook"),
         ("SessionStart", None, "session-brief"),
         ("UserPromptSubmit", None, "prompt-hook"),
     ]
@@ -270,10 +341,16 @@ def _merge_hook_entries(settings):
         cmd = guarded_hook_command(subcommand)
         token = f"monition {subcommand}"
         entries = hooks.setdefault(event, [])
-        ours = [h for entry in entries for h in entry.get("hooks", [])
+        # (entry, hook) pairs so staleness sees the entry's matcher too — a
+        # matcher-only change (e.g. Write|Edit -> Write|Edit|Bash at v8) must
+        # replace the entry, not silently pass the command-equality check
+        ours = [(entry, h) for entry in entries
+                for h in entry.get("hooks", [])
                 if token in (h.get("command") or "")]
-        if len(ours) == 1 and ours[0].get("command") == cmd:
+        if (len(ours) == 1 and ours[0][1].get("command") == cmd
+                and ours[0][0].get("matcher") == matcher):
             continue  # current — nothing to do
+        ours = [h for _, h in ours]
         if ours:
             # stale command and/or duplicates: remove every hook carrying our
             # subcommand token, dropping only entries *we* emptied
@@ -369,15 +446,15 @@ def init_store(store, dolt=False, dry_run=False):
         def make():
             os.makedirs(store, exist_ok=True)
             try:
-                DoltBackend(store).init(V7_SCHEMA)
+                DoltBackend(store).init(V8_SCHEMA)
             except StorageBackendError as e:
                 raise StoreContractError(str(e)) from e
-        act(f"create Monition store at {store} (v7 schema, dolt)", make)
+        act(f"create Monition store at {store} (v8 schema, dolt)", make)
     else:
         def make():
             os.makedirs(store, exist_ok=True)
-            SqliteBackend(os.path.join(store, "store.db")).init(V7_SCHEMA_SQLITE)
-        act(f"create Monition store at {store} (v7 schema, sqlite)", make)
+            SqliteBackend(os.path.join(store, "store.db")).init(V8_SCHEMA_SQLITE)
+        act(f"create Monition store at {store} (v8 schema, sqlite)", make)
     return changes
 
 
@@ -522,8 +599,8 @@ def _raw_sql(store_path, query):
 
 
 def _migrate_sqlite(store_path, db_path):
-    """The SQLite migration ladder is v6→v7 only: the SQLite backend shipped at
-    v6, so no older SQLite store exists to migrate."""
+    """The SQLite migration ladder starts at v6 (the SQLite backend shipped at
+    v6, so no older SQLite store exists to migrate): v6→v7→v8."""
     backend = SqliteBackend(db_path)
     t_cols = {r["Field"] for r in backend.describe("takeaways")}
     if not t_cols:
@@ -541,19 +618,25 @@ def _migrate_sqlite(store_path, db_path):
         steps.append(_V7_STEPS_SQLITE[1])
     if not backend.describe("violations"):
         steps.append(_V7_STEPS_SQLITE[2])
+    # v7 → v8: the takeaways rebuild carries sem_threshold + the widened
+    # trigger_kind CHECK together (SQLite cannot ALTER a CHECK constraint).
+    if "sem_threshold" not in t_cols:
+        steps.extend(_V8_TAKEAWAYS_REBUILD_SQLITE)
+    if not backend.describe("mutations"):
+        steps.append(_MUTATIONS_DDL_SQLITE)
     if not steps:
-        raise StoreContractError("store is already v7 — nothing to migrate")
+        raise StoreContractError("store is already v8 — nothing to migrate")
     try:
         for step in steps:
             backend.execute_sql(step)
     except StorageBackendError as e:
         raise StoreContractError(str(e)) from e
     Store(store_path)  # the reader's fingerprint check is the success gate
-    return f"migrated {store_path} to v7"
+    return f"migrated {store_path} to v8"
 
 
 def migrate(store_path):
-    """Bring a store up to the current schema (v7). Cumulative — an older store
+    """Bring a store up to the current schema (v8). Cumulative — an older store
     traverses every step it is missing:
 
     - v1 → v2: split the overloaded status domain into status + mirror axes
@@ -564,6 +647,8 @@ def migrate(store_path):
       from this store's repo root), then retire the vestigial mirror column
     - v6 → v7: add violation_signature to takeaways + match_evidence to firings,
       create the violations table (all additive; existing rows stay NULL)
+    - v7 → v8: add sem_threshold to takeaways, widen trigger_kind with
+      'tool_call', create the mutations table (atomic; existing rows stay NULL)
     """
     if (not os.path.isdir(os.path.join(store_path, ".dolt"))
             and os.path.exists(os.path.join(store_path, "store.db"))):
@@ -588,15 +673,23 @@ def migrate(store_path):
         violations_exist = True
     except StoreContractError:
         violations_exist = False
+    try:
+        _raw_sql(store_path, "DESCRIBE `mutations`")
+        mutations_exist = True
+    except StoreContractError:
+        mutations_exist = False
 
     cols = {r["Field"]: r["Type"] for r in _raw_sql(store_path, "DESCRIBE `takeaways`")}
     has_reach = "reach" in cols
     has_signature = "violation_signature" in cols
+    has_threshold = "sem_threshold" in cols
+    has_tool_call = "tool_call" in cols.get("trigger_kind", "")
 
     if (decisions_exist and has_provenance and has_situation
             and has_reach and has_firing_repo
-            and has_signature and has_evidence and violations_exist):
-        raise StoreContractError("store is already v7 — nothing to migrate")
+            and has_signature and has_evidence and violations_exist
+            and has_threshold and has_tool_call and mutations_exist):
+        raise StoreContractError("store is already v8 — nothing to migrate")
 
     status = cols.get("status")
     if status == _V1_STATUS:
@@ -654,15 +747,23 @@ def migrate(store_path):
     if not violations_exist:
         _raw_sql(store_path, _VIOLATIONS_DDL)
 
+    # v7 -> v8: the mutation track — per-indicator guards (the v7 lesson).
+    if not has_threshold:
+        _raw_sql(store_path, _TAKEAWAYS_THRESHOLD_DDL)
+    if not has_tool_call:
+        _raw_sql(store_path, _TAKEAWAYS_TOOLCALL_DDL)
+    if not mutations_exist:
+        _raw_sql(store_path, _MUTATIONS_DDL)
+
     Store(store_path)  # the reader's fingerprint check is the success gate
-    return f"migrated {store_path} to v7"
+    return f"migrated {store_path} to v8"
 
 
 # --- v6 fold: consolidate per-repo Dolt stores into the Dolt hub ----------
 
 _TAKEAWAY_COLS = ["created", "kind", "scope", "trigger_kind", "trigger_spec",
                   "one_liner", "full_content", "source", "status", "reach", "origin_repo",
-                  "violation_signature"]
+                  "violation_signature", "sem_threshold"]
 _FIRING_COLS = ["fired_at", "session_id", "trigger_kind", "trigger_context", "outcome",
                 "git_sha", "git_dirty", "model", "monition_version", "situation", "repo",
                 "match_evidence"]
@@ -755,7 +856,7 @@ def fold_store(source_path, hub_path):
                    for t in ("takeaways", "firings", "decisions", "violations"))
 
     _insert_rows(hub_path, "takeaways", ["id"] + _TAKEAWAY_COLS, [
-        _row_values(r, _TAKEAWAY_COLS, set(), [_numv(t_base + int(r["id"]))])
+        _row_values(r, _TAKEAWAY_COLS, {"sem_threshold"}, [_numv(t_base + int(r["id"]))])
         for r in takeaways])
     _insert_rows(hub_path, "firings", ["id", "takeaway_id"] + _FIRING_COLS, [
         _row_values(r, _FIRING_COLS, _FIRING_NUM,

@@ -99,7 +99,7 @@ fire time — capture-or-lose, like v4 provenance and v5 `situation`. A v5 store
 and `origin_repo`/`firings.repo` from the store's own repo root, since a per-repo store
 belongs to exactly one repo), then `DROP COLUMN mirror`.
 
-**v7 (2026-07-01, current):** makes a row's ground truth observable — the recall
+**v7 (2026-07-01):** makes a row's ground truth observable — the recall
 column (Phase 6, framed by
 `docs/decisions/2026-07-01-row-lifecycle-pr-framing-and-mutation-track.md`). Adds
 (a) `violation_signature` to `takeaways` — an optional machine-checkable probe for
@@ -114,6 +114,24 @@ firings that happened. A v6 store — one whose `takeaways` lacks
 `monition migrate` is the repair path (additive `ALTER`s plus `CREATE TABLE
 violations`, does not touch existing rows — their new columns stay NULL).
 
+**v8 (2026-07-02, current):** makes triggers mutable with provenance (design:
+`docs/decisions/2026-07-01-trigger-module-representation.md`; shipped with
+bucket B03). Three pieces, migrated **atomically** (the v7 lesson: partial
+migration makes version detection ambiguous): (a) `sem_threshold` on
+`takeaways` — the semantic module's per-row parameter (see `### Trigger
+modules`); (b) `trigger_kind` enum widened with `'tool_call'` — the first
+post-v7 kind; its `trigger_spec` is a JSON object (coordinate system defined
+when the executor ships, B05); (c) the `mutations` table — event-grain
+provenance for every consented trigger mutation (see `## mutations — per-field
+meaning`). A v7 store — one whose `takeaways` lacks `sem_threshold` — is
+**rejected with an explicit migrate-the-store message**; `monition migrate` is
+the repair path (additive `ALTER`s + `CREATE TABLE mutations` on Dolt; on
+SQLite the `takeaways` table is rebuilt in place because a CHECK constraint
+cannot be ALTERed — rows are copied byte-identical, ids preserved). Existing
+rows are untouched — `sem_threshold` stays NULL = global default. The version
+ladder's v8 rung uses per-indicator table guards (a missing `mutations` table
+alone is not a version signal — same discipline as v7's `violations` guard).
+
 ## `takeaways` — per-field meaning
 
 | Field | Type | Meaning |
@@ -122,7 +140,7 @@ violations`, does not touch existing rows — their new columns stay NULL).
 | `created` | datetime | Insertion time. Naive local server time; no timezone. |
 | `kind` | enum `gotcha\|rule\|preference` | Lesson genre. Closed domain. |
 | `scope` | varchar, nullable | Human-facing tags. Free text; never machine-matched. |
-| `trigger_kind` | enum `edit_path\|session_start\|on_demand` | Which executor may fire this row. Closed domain. |
+| `trigger_kind` | enum `edit_path\|session_start\|on_demand\|tool_call` | Which executor may fire this row. Closed domain (`tool_call` since v8). |
 | `trigger_spec` | varchar, nullable | Coordinates depend on `trigger_kind` — see below. |
 | `one_liner` | varchar(500) | **The fired payload.** The only text injected at disclosure time; cost accounting (`inject_tokens`) is computed over this plus the executor's framing lines, never over `full_content`. |
 | `full_content` | text, nullable | The why + workaround. Pulled on demand (`show <t-id>`); zero passive context cost. |
@@ -131,6 +149,7 @@ violations`, does not touch existing rows — their new columns stay NULL).
 | `reach` | enum `general\|project` | Where the row fires — see below. `general` = any repo; `project` = only `origin_repo`. Default `project`. |
 | `origin_repo` | varchar, nullable | Absolute repo root the row belongs to (the matcher gate for `project` rows). Set to the current repo at add time; backfilled from the store's repo root at v6 migration. |
 | `violation_signature` | text, nullable | **v7.** Optional machine-checkable probe for the failure the row warns about — see `### Violation signatures`. NULL = no probe exists; the row simply has no false-negative column (degrades to the precision-only view). Written by the narrow `set-signature` mutator or `add --violation-signature`; interpreted only by `monition eval-session`, **never** by the disclosure executors (the disclosure machinery stays dumb). |
+| `sem_threshold` | decimal, nullable | **v8.** Per-row minimum cosine for the semantic module, domain [0,1]; NULL = the global default (`embed.SIM_THRESHOLD`). Read only by the `on_demand` semantic pass and reporting; written only by the narrow `set_threshold` verb (`calibrate --apply`, the `tune` mutation verb in `mutations`) — never a generic setter. See `### Trigger modules`. |
 
 ### `trigger_spec` coordinate systems
 
@@ -168,6 +187,83 @@ violations`, does not touch existing rows — their new columns stay NULL).
   is an explicit pull — no scorer gate, no session dedup (`session_id` NULL),
   firings still logged, injection cap still applied (the result still lands in
   the context window).
+
+### Trigger modules (interpretation layer)
+
+A row's trigger is a composition of **modules** drawn from a closed vocabulary.
+Modules are an *interpretation layer* over the columns above — module identity is
+a fixed function of `trigger_kind` (plus per-row parameters), **never inferred
+from the shape of `trigger_spec` and never stored redundantly**. Every pre-v8 row
+is valid unmodified; nothing about a row's spelling changes when the module view
+ships (this is the trigger-as-data position: rows own *what fires when*, the
+module layer owns *how matching executes*).
+
+Module vocabulary, ordered by the determinism ladder (most deterministic first —
+the mutation engine's preference order at equal performance):
+
+| Module | Params | Deterministic? |
+|---|---|---|
+| `glob` | comma-separated `fnmatch` patterns | yes — exact path match |
+| `tool_call` | JSON spec (**v8**; see `### trigger_spec coordinate systems`) | yes — exact tool + substring match |
+| `lexical` | comma-separated keywords, case-insensitive substring | yes — exact text match |
+| `semantic` | embed text (`one_liner + trigger_spec`), threshold θ | no — model + threshold |
+| `always` | none | yes — fires on its event unconditionally |
+| `state_probe` | *reserved* — named on the ladder, no consuming row class yet | — |
+
+The closed `trigger_kind` → composition mapping:
+
+| `trigger_kind` | Composition |
+|---|---|
+| `edit_path` | `glob(trigger_spec)` |
+| `session_start` | `always` |
+| `on_demand` | `lexical(trigger_spec)` **OR** `semantic(one_liner + trigger_spec, θ)` — θ = `sem_threshold` if set, else global `SIM_THRESHOLD` |
+| `tool_call` (v8) | `tool_call(trigger_spec)` |
+
+Rules the module layer binds:
+
+- **Per-row parameters are columns, not microformat.** A module parameter the
+  engine must read, aggregate over, or mutate independently gets its own nullable
+  column (NULL = global default); it is never buried inside `trigger_spec`, which
+  stays user-authored trigger data with a per-kind dialect. First instance:
+  `sem_threshold` (v8). Engine-calibrated parameters and user-authored specs have
+  different provenance and different mutators — the spelling keeps them apart.
+- **Spec dialects are frozen at v7.** The three v7 kinds keep their microformats
+  exactly as specified above; every kind added at v8+ spells `trigger_spec` as a
+  single JSON object.
+- **Composition is representable, not implemented.** A future layered trigger
+  enters as a new `trigger_kind` whose JSON `trigger_spec` is a module-descriptor
+  tree (`{"any": [...]}` / `{"all": [...]}`, leaves naming vocabulary modules with
+  their params) — enum-widening versioning applies. No composition engine exists
+  and none may be built ahead of a consuming proposal.
+- **Assess-path == eval-path.** Any code that decides whether a module (or module
+  candidate) matches a moment — the proposal engine, threshold calibration,
+  replay — must execute the production matcher code path. The
+  reproduce-the-semantics clause in `### trigger_spec coordinate systems` is the
+  floor for external simulations; within monition the rule is same code, not
+  re-implementation.
+- **Mutation = consented row edit with provenance.** Every trigger mutation flows
+  through a narrow verb (no generic setter —
+  `docs/decisions/2026-06-21-no-store-mutation-primitive-isolate-instead.md`),
+  records the old value before the change, and is proposed-then-accepted, never
+  auto-applied. The record is event-grain in `mutations` (v8, below).
+
+- **`tool_call`** (v8) — one JSON object (the post-v7 spec dialect):
+  `{"tool": "<tool name>", "field": "<tool_input key>", "contains":
+  ["<needle>", ...]}`. Matched by `WriteStore.match_tool_call(tool_name,
+  tool_input)` at the PreToolUse execution moment: `tool` must equal the
+  hook's `tool_name` exactly, and any `contains` needle must appear as a
+  **case-sensitive substring** of `tool_input[field]` (which must be a
+  string). Pure string work — no embeddings, no extra store reads (PreToolUse
+  fires on every matched tool call). Fail-open on read (malformed spec or
+  input shape = no match, never an error); the write-side gate
+  (`validate_tool_call_spec`) rejects malformed specs at authoring time, so
+  read-side skipping is the exception path. Match evidence:
+  `{"module": "tool_call", "tool": …, "pattern": <the needle that hit>,
+  "matched": <the full field text, lossless>}`. Dedup: same per-session
+  `_not_yet_fired` filter as the other kinds. The executor binding is the
+  PreToolUse fire-hook; the settings matcher must include the tools rows
+  target (`Write|Edit|Bash` as of v8 — widen only when a module consumes a
+  new tool).
 
 ### Violation signatures
 
@@ -352,6 +448,36 @@ hook path reads or writes this table.
   `docs/decisions/2026-06-18-noise-targets-the-filter-not-the-gate.md`): a violation
   says the *trigger* missed the moment — it is evidence about trigger coverage,
   not about payload quality, and Phase 7 must attribute it to the trigger layer.
+
+## `mutations` — per-field meaning (v8)
+
+One row per **consented mutation event** — event-grain, not per-field: a verb that
+atomically changes several fields (e.g. a kind migration rewriting `trigger_kind` +
+`trigger_spec`) is one row, so the counterfactual unit replay evaluates is the
+mutation as applied, never half of one.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | int, auto | Mutation event id. |
+| `takeaway_id` | int | The mutated row. |
+| `mutated_at` | datetime | When the accepted mutation was applied. Naive local time, like `created`. |
+| `verb` | varchar | **Explicit** mutation kind — never inferred from which fields changed (the multi-variant rule). Open documented vocabulary, initial set: `tune`, `retarget`, `migrate_kind`, `merge`, `graduate`, `stale`. New verbs are additive and introduced by a decision doc; readers must tolerate unknown verbs (skip-with-note, like unknown signature kinds). |
+| `changes` | text (JSON) | `{"<field>": {"old": <value>, "new": <value>}, ...}` for every field the verb touched. The old values are captured **before** the write — this is the provenance the framing decision requires. |
+| `source` | varchar, nullable | Proposal provenance pointer (proposal/session id, or `manual`). Like `takeaways.source`: never substituted or regenerated. |
+
+Semantics:
+
+- **Reconstruction rule**: a row's trigger state at time T = its current state with
+  the inverse of every `changes` entry after T applied, newest first. This holds
+  because all trigger-field writes flow through mutation verbs from v8 on;
+  pre-v8 edits are not recorded and reconstruction does not reach behind v8.
+- **Backend-agnostic by construction**: this table is the contract-level
+  provenance record. Dolt commit history remains an auxiliary audit trail on Dolt
+  backends, but no consumer may depend on it — SQLite hosts have no history, and
+  per-field archaeology across interleaved commits is not a query interface.
+- **A mutation is not a firing and not a rating** — it never enters precision
+  denominators or scorer evidence; its consumers are the proposal engine's
+  audit view, `report`, and `replay`.
 
 ## Tier-0 interchange format (lessons file)
 

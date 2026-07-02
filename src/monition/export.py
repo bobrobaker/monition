@@ -15,6 +15,7 @@ that additive columns grow the export and consumers ignore unknown fields.
 import json
 from datetime import datetime
 
+from .metrics import batch_sizes
 from .score import EV_THRESHOLD, N_COLD_START
 from .store import StoreContractError
 
@@ -62,7 +63,7 @@ def _rating_priority(fire_count, rated_count, helpful_count):
     return round(fire_count * closeness, 4)
 
 
-def _record(firing, takeaway, stats):
+def _record(firing, takeaway, stats, batch_size):
     """One export record. NULL provenance/outcome is preserved verbatim
     (None -> JSON null), never coerced. `stats` carries the parent row's
     store-wide aggregates for the denormalized rating-value fields."""
@@ -93,6 +94,11 @@ def _record(firing, takeaway, stats):
         "rated_count": rated_count,       # how much evidence already exists
         "precision": (round(precision, 4) if precision is not None else None),
         "rating_priority": _rating_priority(fire_count, rated_count, helpful_count),
+        # B04 batch attribution: how many firings shared this one's delivery
+        # moment (session + trigger_kind + trigger_context). >= 2 means a
+        # shared-cause batch — B06 discounts such noise for per-row decisions
+        # (2026-06-18 Filter-not-Gate). Additive, no schema_version bump.
+        "batch_size": batch_size,
     }
 
 
@@ -117,6 +123,9 @@ def export_records(store, since=None, rated_only=False, unrated_only=False,
     by_id = {t.id: t for t in store.takeaways()}
     all_firings = list(store.firings())
     stats = _row_stats(all_firings)
+    # batch sizes computed store-wide, like stats — the batch a firing belongs
+    # to is a property of the delivery moment, not of the filtered slice
+    sizes = batch_sizes(all_firings)
     since_dt = _parse_since(since) if since else None
     out = []
     for f in all_firings:
@@ -128,7 +137,8 @@ def export_records(store, since=None, rated_only=False, unrated_only=False,
             continue
         if session is not None and f.session_id != session:
             continue
-        out.append(_record(f, by_id[f.takeaway_id], stats[f.takeaway_id]))
+        out.append(_record(f, by_id[f.takeaway_id], stats[f.takeaway_id],
+                           sizes[f.id]))
     if order_by == "priority":
         # stable sort: rating_priority desc, then traffic desc; ties keep fired_at order
         out.sort(key=lambda r: (r["rating_priority"], r["fire_count"]), reverse=True)
