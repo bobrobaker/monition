@@ -38,6 +38,18 @@ You are mining this session for takeaways. The store's semantics live in
      math, you only consume the order. If `$CLAUDE_CODE_SESSION_ID` is unset, scope with
      `--since <today>` instead. **Fail open:** if the `monition` CLI or live store is
      absent, skip the pass entirely.
+   - **Run the recall sweep (the FN side of the eval).** Ratings can only grade what
+     fired — nothing fires on a missed trigger, so recall needs its own probe:
+     `monition eval-session --transcript ~/.claude/projects/<project-dir-slug>/$CLAUDE_CODE_SESSION_ID.jsonl`
+     (the session id defaults to the transcript filename stem; same path pattern
+     wrap-session backfill uses). Per signature-bearing row it classifies the session and
+     persists only **not-fired∧hit** — the failure a row warns about happened and the row
+     never fired. Surface those in this same worklist moment: judge from the stored
+     evidence excerpt whether each event is real; acting on one (widening
+     `trigger_spec`) stays a consented row edit. A **fired∧hit** (fired, failure happened
+     anyway) is payload evidence, not trigger evidence — worth a note in the mining
+     pass, not a noise rating. **Fail open** like the rest of the pass: CLI, store, or
+     transcript absent → skip.
    - **Walk the top N** (a budget — ~15; head, not tail; stop when `rating_priority`
      drops off or evidence runs out — skip the long tail). For each firing, look in the
      session for evidence the injected `one_liner` (it fired at `trigger_context` /
@@ -115,7 +127,16 @@ You are mining this session for takeaways. The store's semantics live in
    make it a trap-warning, not a description, and keep it **≤150 chars**: every char
    is paid on every fire, and `monition show <id>` carries the depth; `monition add`
    hard-rejects past 250), `full_content` (the why + the workaround), `source`
-   (session/commit).
+   (session/commit). Then one more question: **is the failure this row warns about
+   machine-checkable in a transcript?** If yes, author the probe in the same breath —
+   `monition add ... --violation-signature '{"kind": "transcript_regex", "pattern": "<regex>"}'`
+   — it is what lets the recall sweep (step 0c) catch the row failing to fire. Probe
+   the **failure event itself** (the error text, the bad command output, the forbidden
+   pattern written), never the topic: injected one-liners *discuss* failures, so a
+   topic-shaped pattern self-matches and manufactures false events. Prefer
+   under-matching — a missed event costs nothing (the row stays precision-only, as
+   today); a false one pollutes the trigger-broadening signal. Never mandatory: most
+   rows won't have one, by design.
 4. **Show the proposed rows and get acceptance before inserting** (consent gate).
 5. Insert accepted rows (`monition add …`), then snapshot the store:
    `monition commit -m "mine: <session topic>"`. The store is the hub at the landing
@@ -135,12 +156,13 @@ METHOD_LESSON_ROUTING = r"""# Lesson routing — where a mined lesson lands
 codification (`/codify`) — after the lesson is drafted, before the consent-gate
 proposal. Output: a destination plus one line of reasoning, shown at the gate.
 
-**Version:** routing v4 (2026-07-01). This is the canonical text; monition's
+**Version:** routing v5 (2026-07-01). This is the canonical text; monition's
 mine-session skill template carries a domain-stripped copy (confer resolution,
 2026-06-12). Bump this version on any change to the tests and hand off to
 monition once — `monition sync` propagates from there. (v2: test 4 names the three
 CLAUDE.md scopes. v3: the re-injection precondition. v4: the scope+audience split
-extended to skill files in test 4.) The `routing vN` token on
+extended to skill files in test 4. v5: the mine-session canonical gains the recall
+sweep in the rating pass and violation-signature authoring at row birth.) The `routing vN` token on
 this line is a **parsed contract**: monition runs a dev-only parity test that reads it
 and fails when its mirrored `ROUTING_VERSION` has fallen behind — so keep the
 `**Version:** routing vN` format stable, and a bump here is the signal to re-strip.

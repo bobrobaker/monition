@@ -36,6 +36,7 @@ _REQUIRED = {
         "status": r"^enum\('active','retired'\)$",
         "reach": r"^enum\('general','project'\)$",
         "origin_repo": r"^varchar",
+        "violation_signature": r"^text",
     },
     "firings": {
         "id": r"^int",
@@ -51,6 +52,7 @@ _REQUIRED = {
         "monition_version": r"^varchar",
         "situation": r"^text",
         "repo": r"^varchar",
+        "match_evidence": r"^text",
     },
     "decisions": {
         "id": r"^int",
@@ -60,6 +62,14 @@ _REQUIRED = {
         "evidence_count": r"^int",
         "cold_start": r"^tinyint",
         "ev_score": r"^decimal",
+    },
+    "violations": {
+        "id": r"^int",
+        "takeaway_id": r"^int",
+        "session_id": r"^varchar",
+        "detected_at": r"^datetime",
+        "evidence": r"^text",
+        "repo": r"^varchar",
     },
 }
 
@@ -77,6 +87,7 @@ _REQUIRED_SQLITE = {
         "status": r"^TEXT$",
         "reach": r"^TEXT$",
         "origin_repo": r"^TEXT$",
+        "violation_signature": r"^TEXT$",
     },
     "firings": {
         "id": r"^INTEGER$",
@@ -92,6 +103,7 @@ _REQUIRED_SQLITE = {
         "monition_version": r"^TEXT$",
         "situation": r"^TEXT$",
         "repo": r"^TEXT$",
+        "match_evidence": r"^TEXT$",
     },
     "decisions": {
         "id": r"^INTEGER$",
@@ -101,6 +113,14 @@ _REQUIRED_SQLITE = {
         "evidence_count": r"^INTEGER$",
         "cold_start": r"^INTEGER$",
         "ev_score": r"^NUMERIC$",
+    },
+    "violations": {
+        "id": r"^INTEGER$",
+        "takeaway_id": r"^INTEGER$",
+        "session_id": r"^TEXT$",
+        "detected_at": r"^TEXT$",
+        "evidence": r"^TEXT$",
+        "repo": r"^TEXT$",
     },
 }
 
@@ -124,6 +144,8 @@ class Takeaway:
     status: str
     reach: str
     origin_repo: Optional[str]
+    # v7 violation signature — None = no probe; the row has no FN column
+    violation_signature: Optional[str] = None
 
     @property
     def firing_eligible(self):
@@ -146,6 +168,8 @@ class Firing:
     monition_version: Optional[str] = None
     # v5 firing-grain situational excerpt — None = not captured / executor had none
     situation: Optional[str] = None
+    # v7 lossless match evidence — None = pre-v7 firing or a non-matcher fire
+    match_evidence: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +182,19 @@ class Decision:
     evidence_count: int
     cold_start: bool
     ev_score: Optional[float]  # None when cold_start=True (Dolt omits NULL key)
+
+
+@dataclass(frozen=True)
+class Violation:
+    """One observed not-fired∧hit event: the failure a row warns about occurred
+    in a session where the row never fired. Never a firing — excluded from
+    precision, disclosure dedup, and scorer evidence by contract."""
+    id: int
+    takeaway_id: int
+    session_id: str
+    detected_at: datetime
+    evidence: Optional[str]
+    repo: Optional[str]
 
 
 def _parse_dt(s):
@@ -222,6 +259,18 @@ class Store:
                 "v5-schema store: `takeaways` lacks `reach`/`origin_repo` — "
                 "run `monition migrate` to upgrade to v6"
             )
+        # The three v7 pieces migrate atomically, so any one missing means v6 —
+        # but a missing *table* is not a version signal; it falls through to the
+        # per-table checks (hence the per-indicator table guards).
+        violations_present = bool(self._backend.describe("violations"))
+        if ((takeaway_cols and "violation_signature" not in takeaway_cols)
+                or (firing_cols and "match_evidence" not in firing_cols)
+                or (takeaway_cols and firing_cols and not violations_present)):
+            raise StoreContractError(
+                "v6-schema store: lacks `violation_signature`/`match_evidence`/"
+                "`violations` (the recall column) — "
+                "run `monition migrate` to upgrade to v7"
+            )
 
     def _validate_schema(self):
         required = (
@@ -250,7 +299,8 @@ class Store:
     def takeaways(self):
         rows = self._sql(
             "SELECT id, created, kind, scope, trigger_kind, trigger_spec,"
-            " one_liner, full_content, source, status, reach, origin_repo"
+            " one_liner, full_content, source, status, reach, origin_repo,"
+            " violation_signature"
             " FROM takeaways ORDER BY id"
         )
         return [
@@ -260,6 +310,7 @@ class Store:
                 trigger_spec=r.get("trigger_spec"), one_liner=r["one_liner"],
                 full_content=r.get("full_content"), source=r.get("source"),
                 status=r["status"], reach=r["reach"], origin_repo=r.get("origin_repo"),
+                violation_signature=r.get("violation_signature"),
             )
             for r in rows
         ]
@@ -268,7 +319,7 @@ class Store:
         rows = self._sql(
             "SELECT id, takeaway_id, fired_at, session_id, trigger_kind,"
             " trigger_context, outcome, git_sha, git_dirty, model,"
-            " monition_version, situation FROM firings ORDER BY id"
+            " monition_version, situation, match_evidence FROM firings ORDER BY id"
         )
         firings = [
             Firing(
@@ -280,6 +331,7 @@ class Store:
                 git_dirty=bool(r["git_dirty"]) if r.get("git_dirty") is not None else None,
                 model=r.get("model"), monition_version=r.get("monition_version"),
                 situation=r.get("situation"),
+                match_evidence=r.get("match_evidence"),
             )
             for r in rows
         ]
@@ -313,3 +365,24 @@ class Store:
                 f"decisions reference missing takeaways (decision ids {orphans})"
             )
         return decisions
+
+    def violations(self):
+        rows = self._sql(
+            "SELECT id, takeaway_id, session_id, detected_at, evidence, repo"
+            " FROM violations ORDER BY id"
+        )
+        violations = [
+            Violation(
+                id=r["id"], takeaway_id=r["takeaway_id"],
+                session_id=r["session_id"], detected_at=_parse_dt(r["detected_at"]),
+                evidence=r.get("evidence"), repo=r.get("repo"),
+            )
+            for r in rows
+        ]
+        known = {t.id for t in self.takeaways()}
+        orphans = [v.id for v in violations if v.takeaway_id not in known]
+        if orphans:
+            raise StoreContractError(
+                f"violations reference missing takeaways (violation ids {orphans})"
+            )
+        return violations

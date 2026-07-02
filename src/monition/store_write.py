@@ -42,6 +42,38 @@ DUPLICATE_COSINE = 0.9
 # recurring cost. Detail belongs in full_content (pulled on demand, free).
 ONE_LINER_MAX_CHARS = 250
 
+# v7 violation-signature kinds this writer can author. Read-side (the offline
+# evaluator) additionally tolerates unknown kinds — rows written by a newer
+# monition — by skipping them with a note; the write-side gate is strict.
+SIGNATURE_KINDS = ("transcript_regex",)
+
+
+def validate_signature(raw):
+    """Authoring gate (contract §Violation signatures): shape-check the JSON
+    and compile the pattern at write time, so read-side skipping stays the
+    exception path. Returns the normalized JSON string; raises
+    StoreContractError on any defect."""
+    try:
+        spec = json.loads(raw)
+    except (TypeError, ValueError) as e:
+        raise StoreContractError(f"violation signature is not valid JSON: {e}")
+    if not isinstance(spec, dict) or not spec.get("kind"):
+        raise StoreContractError(
+            'violation signature must be a JSON object with a "kind"')
+    if spec["kind"] not in SIGNATURE_KINDS:
+        raise StoreContractError(
+            f"unknown signature kind {spec['kind']!r} — this monition can "
+            f"author: {', '.join(SIGNATURE_KINDS)}")
+    pattern = spec.get("pattern")
+    if not pattern or not isinstance(pattern, str):
+        raise StoreContractError(
+            'a transcript_regex signature needs a non-empty "pattern" string')
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        raise StoreContractError(f"signature pattern does not compile: {e}")
+    return json.dumps(spec)
+
 
 def current_repo():
     """Absolute host repo root: $CLAUDE_PROJECT_DIR (set for hook commands),
@@ -184,22 +216,64 @@ class WriteStore(Store):
 
     def add(self, kind, trigger_kind, one_liner, trigger_spec=None,
             full_content=None, scope=None, source=None, reach="project",
-            origin_repo=None):
+            origin_repo=None, violation_signature=None):
         # A project row with no origin_repo can never fire (origin_repo = NULL
         # never matches the reach predicate), so stamp the current repo. general
         # rows fire anywhere and need no origin.
         if reach == "project" and origin_repo is None:
             origin_repo = current_repo()
+        if violation_signature is not None:
+            violation_signature = validate_signature(violation_signature)
         self._sql(
             "INSERT INTO takeaways (created, kind, scope, trigger_kind, trigger_spec,"
-            " one_liner, full_content, source, reach, origin_repo) VALUES (NOW(), "
+            " one_liner, full_content, source, reach, origin_repo,"
+            " violation_signature) VALUES (NOW(), "
             f"{val(kind)}, {val(scope)}, {val(trigger_kind)}, {val(trigger_spec)},"
             f" {val(one_liner)}, {val(full_content)}, {val(source)}, {val(reach)},"
-            f" {val(origin_repo)})"
+            f" {val(origin_repo)}, {val(violation_signature)})"
         )
         # each `dolt sql -q` is its own connection, so LAST_INSERT_ID() is useless here
         row = self._sql("SELECT MAX(id) AS id FROM takeaways")
         return f"added takeaway {row[0]['id']}"
+
+    def set_signature(self, id_, signature):
+        """Set or clear (signature=None) a row's violation signature. A narrow,
+        purpose-specific mutator in the retire/rate pattern — decision
+        2026-06-21 rejects a generic column setter, not verbs like this."""
+        rows = self._sql(f"SELECT id FROM takeaways WHERE id = {iid(id_)}")
+        if not rows:
+            raise StoreContractError(f"no takeaway with id {id_}")
+        if signature is None:
+            self._sql("UPDATE takeaways SET violation_signature = NULL"
+                      f" WHERE id = {iid(id_)}")
+            return f"cleared violation signature on takeaway {rows[0]['id']}"
+        normalized = validate_signature(signature)
+        self._sql(f"UPDATE takeaways SET violation_signature = {val(normalized)}"
+                  f" WHERE id = {iid(id_)}")
+        return f"set violation signature on takeaway {rows[0]['id']}"
+
+    def log_violation(self, takeaway_id, session_id, evidence=None, repo=None):
+        """One observed not-fired∧hit event. Idempotent per
+        (takeaway, session) — contract §Violation semantics — so re-running
+        the evaluator over a session never double-logs."""
+        if not session_id:
+            raise StoreContractError("a violation requires a session_id")
+        rows = self._sql(f"SELECT id FROM takeaways WHERE id = {iid(takeaway_id)}")
+        if not rows:
+            raise StoreContractError(f"no takeaway with id {takeaway_id}")
+        existing = self._sql(
+            f"SELECT id FROM violations WHERE takeaway_id = {iid(takeaway_id)}"
+            f" AND session_id = {val(session_id)}"
+        )
+        if existing:
+            return f"violation {existing[0]['id']} (already logged)"
+        self._sql(
+            "INSERT INTO violations (takeaway_id, detected_at, session_id,"
+            f" evidence, repo) VALUES ({iid(takeaway_id)}, NOW(),"
+            f" {val(session_id)}, {val(evidence)}, {val(repo)})"
+        )
+        row = self._sql("SELECT MAX(id) AS id FROM violations")
+        return f"violation {row[0]['id']}"
 
     def list_rows(self, status="active"):
         rows = self._sql(
@@ -240,11 +314,18 @@ class WriteStore(Store):
             " WHERE status = 'active' AND trigger_kind = 'edit_path'"
             + reach_clause(current_repo)
         )
-        hits = [
-            r for r in rows
-            if any(fnmatch.fnmatch(path, g.strip())
-                   for g in (r["trigger_spec"] or "").split(","))
-        ]
+        hits = []
+        for r in rows:
+            pattern = next(
+                (g.strip() for g in (r["trigger_spec"] or "").split(",")
+                 if fnmatch.fnmatch(path, g.strip())), None)
+            if pattern is not None:
+                hits.append({
+                    "id": r["id"], "one_liner": r["one_liner"],
+                    "trigger_spec": r.get("trigger_spec"),
+                    # v7 match evidence: which pattern hit, on which path
+                    "evidence": {"module": "glob", "pattern": pattern, "path": path},
+                })
         return json.dumps(self._not_yet_fired(hits, session))
 
     def on_demand_match(self, query, session=None, current_repo=None, cap=True):
@@ -262,16 +343,25 @@ class WriteStore(Store):
         )
         q = query.lower()
 
-        def lex_hit(r):
-            return any(kw.strip().lower() in q
-                       for kw in (r.get("trigger_spec") or "").split(",")
-                       if kw.strip())
+        def lex_kw(r):
+            """The first keyword that hits, or None — the v7 match evidence."""
+            return next((kw.strip()
+                         for kw in (r.get("trigger_spec") or "").split(",")
+                         if kw.strip() and kw.strip().lower() in q), None)
 
         from . import trace
         trace.mark("match:sql_done")
-        lexical = [{"id": r["id"], "one_liner": r["one_liner"]}
-                   for r in rows if lex_hit(r)]
-        rest = [r for r in rows if not lex_hit(r)]
+        lexical, rest = [], []
+        for r in rows:
+            kw = lex_kw(r)
+            if kw is not None:
+                lexical.append({
+                    "id": r["id"], "one_liner": r["one_liner"],
+                    "evidence": {"module": "lexical", "keyword": kw,
+                                 "query": query},
+                })
+            else:
+                rest.append(r)
         trace.mark("match:lexical_done")
         semantic = []
         if rest:
@@ -286,8 +376,11 @@ class WriteStore(Store):
                     (p for p in zip(sims, rest) if p[0] >= embed.SIM_THRESHOLD),
                     key=lambda p: p[0], reverse=True,
                 )
-                semantic = [{"id": r["id"], "one_liner": r["one_liner"]}
-                            for _, r in ranked]
+                semantic = [{"id": r["id"], "one_liner": r["one_liner"],
+                             "evidence": {"module": "semantic",
+                                          "score": round(float(s), 4),
+                                          "query": query}}
+                            for s, r in ranked]
             except Exception:
                 pass
         # dedup before capping so already-disclosed hits don't consume cap slots
@@ -308,7 +401,7 @@ class WriteStore(Store):
         return json.dumps(self._not_yet_fired(rows, session))
 
     def fire(self, takeaway_id, trigger_kind, session=None, context=None,
-             model=None, situation=None, current_repo=None):
+             model=None, situation=None, current_repo=None, evidence=None):
         # v4 provenance: git state of the *host repo* (current_repo), not the store
         # dir — under a v6 hub `os.path.dirname(self.path)` is the hub, not the repo.
         # current_repo is None only for mine-time self-calls (recurrence logging),
@@ -318,14 +411,18 @@ class WriteStore(Store):
         # precision for general-reach rows. v5 `situation`: the executor's excerpt.
         provenance_root = current_repo or os.path.dirname(self.path)
         git_sha, git_dirty = _git_provenance(provenance_root)
+        # v7 match evidence: the full, lossless record of what the trigger
+        # matched on (dict from the matcher), serialized here. None for fires
+        # logged outside the matchers (manual fire, log-recurrence).
+        evidence_json = json.dumps(evidence) if evidence is not None else None
         self._sql(
             "INSERT INTO firings (takeaway_id, fired_at, session_id, trigger_kind,"
             " trigger_context, git_sha, git_dirty, model, monition_version, situation,"
-            " repo)"
+            " repo, match_evidence)"
             f" VALUES ({iid(takeaway_id)}, NOW(), {val(session)},"
             f" {val(trigger_kind)}, {val(context)}, {val(git_sha)},"
             f" {bval(git_dirty)}, {val(model)}, {val(_monition_version())}, {val(situation)},"
-            f" {val(current_repo)})"
+            f" {val(current_repo)}, {val(evidence_json)})"
         )
         row = self._sql("SELECT MAX(id) AS id FROM firings")
         return f"firing {row[0]['id']}"

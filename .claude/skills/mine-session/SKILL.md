@@ -1,77 +1,141 @@
-<!-- monition-skill v0.3.0 sha256:1555ff185ae34522b3eaedf8a6cb25054c50d842ca56e9dd9cfe382806047eb4 -->
+<!-- monition-skill v0.4.0 sha256:1b6c8da0df47a57900f455abd330a9f5ea11681b6c1525fa8ff7ff9cc0fb1085 -->
 ---
 name: mine-session
-description: End-of-session mining pass — review this session for reusable lessons and house them in the Monition store with explicit triggers. Use when the user invokes /mine-session, says "mine this session" / "save the takeaways", or is wrapping up a session that hit gotchas worth keeping. NOT for mid-session one-offs the user wants codified immediately.
+description: End-of-session mining pass — review this session for reusable lessons and house them in the takeaway store with explicit triggers. Use when the user invokes /mine-session, says "mine this session" / "save the takeaways", or is wrapping up a session that hit gotchas worth keeping. NOT for mid-session one-offs the user wants codified immediately (that's /codify, which can also insert a takeaway).
 ---
 
 # mine-session
 
-You are mining this session for takeaways. The store's semantics live in the
-Monition store contract (`docs/contracts/takeaway-store.md` in the monition
-repo) — read it before your first run in a session.
+You are mining this session for takeaways. The store's semantics live in
+`method/takeaway-store.md` — read it before your first run in a session.
 
-0. **Rate what fired (the eval pass) — run this first, before mining.** The store's
+0a. **Drain session flags — run this before anything else.** Flags live per-session under `~/.claude/session-flags/<session_id>.md`, in a **machine-global directory shared by every concurrent Claude session**. Drain by *liveness* — never the whole directory, or you steal in-flight flags out from under another running session (the concurrency failure this scoping exists to prevent):
+   - **This session's file** (`$CLAUDE_CODE_SESSION_ID.md`) — always in the worklist.
+   - **Other files** — include one ONLY if its session is no longer live (a genuine orphan from a closed, un-mined session). A session is live if `~/.claude/sessions/*.json` holds a record whose `sessionId` equals the filename's id. **Never drain a file whose session is still live** — those flags belong to an active concurrent session. When liveness can't be determined (registry unreadable), treat as live and leave it.
+   - Build the worklist: `ls ~/.claude/session-flags/*.md`, then for each, keep it iff its id == `$CLAUDE_CODE_SESSION_ID` OR its id is absent from the live registry. Read the kept, non-empty files.
+   - Surface this session's flags first, then orphans. `POSTMORTEM` flags are high-priority — do not mine past them; ask whether to invoke `/postmortem` now or defer. `MONITION`/`GOVERNANCE` are pre-routed seeds. `GENERAL` joins the normal mining review.
+   - Delete only the files you actually drained (`rm`). **Fail open:** absent directory, unreadable file, or unreadable registry → skip that file silently (when in doubt, do NOT delete).
+
+0b. **Scan for admitted mistakes.** Before the rating pass, review the session for any moment where Claude explicitly admitted to an error — especially assertions made without verification that turned out to be wrong ("I was wrong about X", "I should have checked", "I asserted X without verifying"). Each such moment is a candidate seed for a governance change: flag it for routing in the mining pass. The question is always: *what would have prevented this class of mistake?* (The `autoflag.py` Stop hook is the mechanical mirror of this scan — it regex-catches the same admitted-error class live and writes a `GOVERNANCE` flag, so step 0a may already hold some.)
+
+0c. **Rate what fired (the eval pass) — run this first, before mining.** The
    fire/suppress gate trains on rated firings, and fire-time rating collects ~none (a
    session mid-task won't stop to grade an injection). So rate here, **warm**, with the
    session still in context — LLM-auto, evidence-gated, bulk-confirmed.
    - **Pull the worklist, highest-value first:**
      `monition export-firings --unrated-only --session "$CLAUDE_CODE_SESSION_ID" --order-by priority`.
-     `--order-by priority` ranks by `rating_priority` (traffic × distance-to-fire/suppress
-     boundary; cold-start rows rank high) — monition owns the math, you only consume the
-     order. If `$CLAUDE_CODE_SESSION_ID` is unset, scope with `--since <today>` instead.
-     **Fail open:** if the `monition` CLI or live store is absent, skip the pass entirely.
-   - **Walk the top N** (a budget — ~15; head, not tail; stop when `rating_priority` drops
-     off or evidence runs out). For each firing, look in the session for evidence the
-     injected `one_liner` (it fired at `trigger_context` / `situation`) actually mattered:
-     it **changed an action**, was **visibly ignored**, or was **contradicted** by what
-     you did.
+     `--order-by priority` is the head-not-tail metric — `rating_priority` = traffic ×
+     distance-to-fire/suppress-boundary, cold-start rows rank high; monition owns the
+     math, you only consume the order. If `$CLAUDE_CODE_SESSION_ID` is unset, scope with
+     `--since <today>` instead. **Fail open:** if the `monition` CLI or live store is
+     absent, skip the pass entirely.
+   - **Run the recall sweep (the FN side of the eval).** Ratings can only grade what
+     fired — nothing fires on a missed trigger, so recall needs its own probe:
+     `monition eval-session --transcript ~/.claude/projects/<project-dir-slug>/$CLAUDE_CODE_SESSION_ID.jsonl`
+     (the session id defaults to the transcript filename stem; same path pattern
+     wrap-session backfill uses). Per signature-bearing row it classifies the session and
+     persists only **not-fired∧hit** — the failure a row warns about happened and the row
+     never fired. Surface those in this same worklist moment: judge from the stored
+     evidence excerpt whether each event is real; acting on one (widening
+     `trigger_spec`) stays a consented row edit. A **fired∧hit** (fired, failure happened
+     anyway) is payload evidence, not trigger evidence — worth a note in the mining
+     pass, not a noise rating. **Fail open** like the rest of the pass: CLI, store, or
+     transcript absent → skip.
+   - **Walk the top N** (a budget — ~15; head, not tail; stop when `rating_priority`
+     drops off or evidence runs out — skip the long tail). For each firing, look in the
+     session for evidence the injected `one_liner` (it fired at `trigger_context` /
+     `situation`) actually mattered: it **changed an action**, was **visibly ignored**,
+     or was **contradicted** by what you did.
+     An **irrelevant fire is noise regardless of trigger breadth** — every injected line
+     dilutes context, so "it fired on a context it doesn't apply to" is itself the
+     evidence: the dilution *is* the cost, and the suppress gate can only learn to quiet
+     a serial diluter from these labels. A precise trigger (`edit_path` / a
+     specific-context match) over-firing is noise per-firing, as before. For a broad /
+     `on_demand` **batch dump** where the whole batch was ignored, rate the batch `noise`
+     in bulk with one shared citation ("session-opening dump, none applied") — bulk noise
+     labels are mechanical and sit outside the ~15 budget, which guards
+     individually-evidenced labels. The distinction that still matters is *applied vs.
+     didn't apply*, not broad vs. precise: a row that fired on a genuinely matching
+     moment where you already complied is a true positive, not noise — leave it unrated
+     (or `helpful` if it visibly shaped the action).
    - **Propose a rating ONLY where the session evidences it**, with a mandatory one-line
      citation of *what in this session* shows it. **No evidence → no rating** — never pad
      to hit coverage; an unsupported `helpful` is directional bias in the eval set, worse
-     than a label missing at random. (A cold mine — rating a session you didn't live
-     through — evidences little and correctly proposes ~0.)
-   - **Present ONE batch for bulk confirm:** all proposed ratings at once, each line
-     `<firing_id> helpful|noise — <one-line evidence>`; the user accepts the batch in a
-     single gesture with per-line veto/flip. A rating is reversible eval data, so this is
-     a **lighter gate** than proposing a new row.
+     than a label missing at random. A cold dispatch-mine (an architect mining workers it
+     didn't live through; see `method/learning-loop.md` §Wiring) evidences ~nothing and
+     correctly proposes ~0.
+   - **Present ONE batch for bulk confirm** — all proposed ratings at once, each line
+     `<firing_id> helpful|noise — <one-line evidence>`. The user accepts the batch in a
+     single gesture with per-line veto/flip. This is a **lighter gate than rows** (`method/
+     write-path.md`): a rating is reversible eval data, not durable governance, so don't
+     run rows-grade scrutiny per line.
    - **Apply the accepted lines:** `monition rate <firing_id> helpful|noise` for each.
-     These ride into the `monition commit` at step 5.
+     These leave uncommitted store state that folds into the `monition commit` at step 5
+     (snapshot them on their own first only if you want them out of an unrelated diff —
+     `method/takeaway-store.md` §Dolt mechanics).
+
+0d. **Grow and tighten the flag corpus (the autoflagger's self-improving half).** The
+   tier-2 lexical layer (`tools/flag_corpus.py`) only learns here — the Stop hook is
+   read-only on the corpus, so every mutation is a mine-time act over *this* session.
+   Two passes, both consent-light (the corpus is a local matcher, not durable
+   governance — a wrong entry self-corrects via demerit, so don't run rows-grade
+   scrutiny per phrase). **Fail open:** if `flag_corpus.py` is absent, skip 0d entirely.
+   - **Recall — learn the misses.** For each *manual* flag this session (your inline
+     self-flags and `/flag` entries — not the ones tagged `Auto-flag`), and for each
+     admitted error 0b surfaced, find the response sentence that earned it and run
+     `python3 tools/flag_corpus.py score "<sentence>"`. **No hit → it's a miss:** the
+     matcher would not have caught it. Extract the *generalizable* phrasing (strip the
+     session's specifics — keep the trap-shaped trigger words) and
+     `flag_corpus.py add "<phrase>" <LABEL>`. A hit means it's already covered — skip.
+   - **Precision — judge the lexical fires.** For each `Auto-flag (lexical)` entry you
+     drained, you've just decided whether it became a real lesson or was noise:
+     `flag_corpus.py credit "<phrase>"` if it routed to a real row/governance change,
+     `flag_corpus.py demerit "<phrase>"` if it was noise. (The phrase is quoted in the
+     flag's `lexical match … on the learned phrase '<phrase>'` line.) Demerits decay a
+     mostly-noise entry below the firing floor; credits hold a useful one up.
+   - The corpus lives at `~/.claude/flag-corpus.json` (machine-local, like the flags
+     themselves) — there is **no** store-commit step for it; the JSON file *is* the
+     state. It is unrelated to the Monition Dolt commit at step 5.
 
    Then mine for new lessons:
 
 1. Review the session for lessons that are **reusable** (would recur) and
    **non-obvious** (a future session wouldn't rediscover them cheaply). Mistakes,
    gotchas, corrections, and confirmed preferences all qualify; routine work does not.
-2. **Route each candidate before drafting** (routing v1 — from CMS
-   `method/lesson-routing.md`; run in order, first decisive test wins; under
-   uncertainty prefer the row — it is the only tier with an eval loop and it
-   retires cleanly):
-   - *Behavior test:* can't state it as "in situation S, do/avoid X" with a
-     nameable S → not routable; leave it in session notes.
-   - *Owning surface:* an artifact that already fires at S (a skill that runs
-     then, a hook on that event, a prompt for that task, a linter on those files,
-     or a governance surface named in this repo's CLAUDE.md) gets the edit
-     directly — a parallel row duplicates its trigger with worse precision.
-     Procedure changes always land here. Destinations with their own admission
-     rules keep them.
-   - *Describable trigger, no owner:* takeaway row (`monition add`) — also the
-     default when evidence is thin.
-   - *Every session:* a CLAUDE.md line, only if it earns being paid every
-     session forever.
-   - *Mechanical shadow:* checkable-and-unambiguous violations also get a linter
-     check alongside whatever prose landed above; for semantic artifacts the
-     host's eval suite plays that role — the lesson must pass it before consent
-     closes.
-
-   Every landing goes through the consent gate; the proposal names the deciding test.
-3. For each candidate routed to a row, draft the full row: `kind`
-   (gotcha/rule/preference), `trigger_kind` + `trigger_spec` (*when should this
-   fire?* — the design decision; edit_path glob, session_start, or on_demand),
-   `one_liner` (what gets injected — make it a trap-warning, not a description),
-   `full_content` (the why + the workaround), `source` (session/commit).
-4. **Show the proposed landings and get acceptance before applying** (consent gate).
+   **A candidate already covered by an existing takeaway is not a new lesson — don't
+   duplicate it; but if the covering row is a low-firing `on_demand` row, run
+   `monition log-recurrence <id>` (optionally `--context "<why it recurred>"`) so the
+   recurrence becomes scorer signal. Skip this for high-firing / `session_start` rows —
+   their normal fire+rate loop already carries their value.**
+2. **Route each candidate per `method/lesson-routing.md`** — not every lesson is a
+   row. Lessons an existing skill, hook, prompt, or linter already owns, and
+   always-on rules, are proposed as governance edits through the same consent gate;
+   only lessons that route to the store continue below. Name the deciding test in
+   the proposal.
+3. For each store-routed candidate, draft the full row: `kind` (gotcha/rule/preference),
+   `trigger_kind` + `trigger_spec` (*when should this fire?* — the design decision;
+   edit_path glob, session_start, or on_demand), `one_liner` (what gets injected —
+   make it a trap-warning, not a description, and keep it **≤150 chars**: every char
+   is paid on every fire, and `monition show <id>` carries the depth; `monition add`
+   hard-rejects past 250), `full_content` (the why + the workaround), `source`
+   (session/commit). Then one more question: **is the failure this row warns about
+   machine-checkable in a transcript?** If yes, author the probe in the same breath —
+   `monition add ... --violation-signature '{"kind": "transcript_regex", "pattern": "<regex>"}'`
+   — it is what lets the recall sweep (step 0c) catch the row failing to fire. Probe
+   the **failure event itself** (the error text, the bad command output, the forbidden
+   pattern written), never the topic: injected one-liners *discuss* failures, so a
+   topic-shaped pattern self-matches and manufactures false events. Prefer
+   under-matching — a missed event costs nothing (the row stays precision-only, as
+   today); a false one pollutes the trigger-broadening signal. Never mandatory: most
+   rows won't have one, by design.
+4. **Show the proposed rows and get acceptance before inserting** (consent gate).
 5. Insert accepted rows (`monition add …`), then snapshot the store:
-   `monition commit -m "mine: <session topic>"`.
-6. If a takeaway is domain-free enough to apply beyond this repo, add it with
-   `--reach general` — general-reach rows fire in every repo, not just this one.
-   The default `--reach project` fires only where it was authored.
+   `monition commit -m "mine: <session topic>"`. The store is the hub at the landing
+   zone (`MONITION_STORE`), gitignored and unpublished — that Dolt commit *is* its
+   version control, so there is nothing to stage into this repo's git. Any working-tree
+   `git commit` of code/docs is separate from the store snapshot.
+6. **Routing a domain-free lesson — queue it upstream.** A transferable lesson (one
+   that survives domain-stripping) is queued to `handoffs/upstream-candidates.md` for
+   the mirror-back sweep that pulls it up to the shared machinery; a lesson that only
+   applies to this repo stays a local row (`--reach project`, the default). A row meant
+   to fire across every repo, not just where authored, is `--reach general`.

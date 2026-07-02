@@ -21,7 +21,7 @@ def _seed_source(tmp_path, name, proj, gen):
     """A v6 Dolt source store at <tmp>/<name>/monition with project + general rows
     (origin_repo = the source's repo root, as a real v6 migration would set it)."""
     store = str(tmp_path / name / "monition")
-    build_dolt_store(store, [ins.V6_SCHEMA])
+    build_dolt_store(store, [ins.V7_SCHEMA])
     origin = os.path.dirname(os.path.abspath(store))
     for ol in proj:
         ins._raw_sql(store, "INSERT INTO takeaways (created, kind, trigger_kind, trigger_spec,"
@@ -37,7 +37,7 @@ def _seed_source(tmp_path, name, proj, gen):
 @dolt_only
 def test_fold_two_sources_conserves_and_remaps_fks(tmp_path):
     hub = str(tmp_path / "hub" / "monition")
-    build_dolt_store(hub, [ins.V6_SCHEMA])
+    build_dolt_store(hub, [ins.V7_SCHEMA])
     a, origin_a = _seed_source(tmp_path, "repoA", ["a-proj"], ["a-gen"])
     b, origin_b = _seed_source(tmp_path, "repoB", ["b-proj"], [])
     # a firing in A referencing its project takeaway (source id 1)
@@ -60,7 +60,7 @@ def test_fold_two_sources_conserves_and_remaps_fks(tmp_path):
 @dolt_only
 def test_fold_is_idempotency_guarded(tmp_path):
     hub = str(tmp_path / "hub" / "monition")
-    build_dolt_store(hub, [ins.V6_SCHEMA])
+    build_dolt_store(hub, [ins.V7_SCHEMA])
     a, _ = _seed_source(tmp_path, "repoA", ["a"], [])
     ins.fold_store(a, hub)
     with pytest.raises(StoreContractError, match="already"):
@@ -68,19 +68,19 @@ def test_fold_is_idempotency_guarded(tmp_path):
 
 
 @dolt_only
-def test_fold_refuses_non_v6_source(tmp_path):
+def test_fold_refuses_non_v7_source(tmp_path):
     hub = str(tmp_path / "hub" / "monition")
-    build_dolt_store(hub, [ins.V6_SCHEMA])
+    build_dolt_store(hub, [ins.V7_SCHEMA])
     v5 = str(tmp_path / "old" / "monition")
     build_dolt_store(v5, [ins.V5_SCHEMA])
-    with pytest.raises(StoreContractError, match="not v6"):
+    with pytest.raises(StoreContractError, match="not v7"):
         ins.fold_store(v5, hub)
 
 
 @dolt_only
 def test_fold_refuses_sqlite_source(tmp_path):
     hub = str(tmp_path / "hub" / "monition")
-    build_dolt_store(hub, [ins.V6_SCHEMA])
+    build_dolt_store(hub, [ins.V7_SCHEMA])
     sqlite_src = build_store(str(tmp_path / "lite"), [SCHEMA])
     with pytest.raises(StoreContractError, match="Dolt"):
         ins.fold_store(sqlite_src, hub)
@@ -89,7 +89,7 @@ def test_fold_refuses_sqlite_source(tmp_path):
 @dolt_only
 def test_folded_hub_respects_reach_filter(tmp_path):
     hub = str(tmp_path / "hub" / "monition")
-    build_dolt_store(hub, [ins.V6_SCHEMA])
+    build_dolt_store(hub, [ins.V7_SCHEMA])
     a, origin_a = _seed_source(tmp_path, "repoA", ["a-proj"], ["shared-gen"])
     b, origin_b = _seed_source(tmp_path, "repoB", ["b-proj"], [])
     ins.fold_store(a, hub)

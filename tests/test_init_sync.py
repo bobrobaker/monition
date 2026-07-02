@@ -343,17 +343,17 @@ INSERT INTO takeaways (id, created, kind, trigger_kind, trigger_spec, one_liner,
 
 
 @dolt_only
-def test_migrate_v1_to_v6(tmp_path):
+def test_migrate_v1_to_v7(tmp_path):
     assert "upstream_candidate" in V1_SCHEMA  # the replace actually took
     store = str(tmp_path / "v1store")
     build_dolt_store(store, [V1_SCHEMA, V1_ROWS])
     with pytest.raises(StoreContractError, match="v1-dialect"):
         Store(store)
 
-    msg = migrate(store)  # cumulative: v1 -> v2 -> v3 -> v4 -> v5 -> v6
-    assert "to v6" in msg
+    msg = migrate(store)  # cumulative: v1 -> v2 -> v3 -> v4 -> v5 -> v6 -> v7
+    assert "to v7" in msg
 
-    s = Store(store)  # v6 fingerprint check passes post-migration
+    s = Store(store)  # v7 fingerprint check passes post-migration
     rows = {t.id: t for t in s.takeaways()}
     # status split preserved; mirror retired at v6 (the candidate/mirrored
     # distinction is dropped — uniform reach='project' backfill, origin_repo from
@@ -367,46 +367,82 @@ def test_migrate_v1_to_v6(tmp_path):
 
 
 @dolt_only
-def test_migrate_v3_to_v6_adds_provenance(tmp_path):
+def test_migrate_v3_to_v7_adds_provenance(tmp_path):
     store = str(tmp_path / "v3store")
     build_dolt_store(store, [ins.V3_SCHEMA])  # decisions present, firings lack provenance
     with pytest.raises(StoreContractError, match="upgrade to v4"):
         Store(store)
 
     msg = migrate(store)
-    assert "to v6" in msg
+    assert "to v7" in msg
 
-    s = Store(store)  # v6 fingerprint passes; provenance + situation now present
+    s = Store(store)  # v7 fingerprint passes; provenance + situation now present
     assert s.firings() == []  # empty store reads cleanly post-migration
 
 
 @dolt_only
-def test_migrate_v4_to_v6_adds_situation(tmp_path):
+def test_migrate_v4_to_v7_adds_situation(tmp_path):
     store = str(tmp_path / "v4store")
     build_dolt_store(store, [ins.V4_SCHEMA])  # provenance present, firings lack situation
     with pytest.raises(StoreContractError, match="upgrade to v5"):
         Store(store)
 
     msg = migrate(store)
-    assert "to v6" in msg
+    assert "to v7" in msg
 
-    s = Store(store)  # v6 fingerprint passes; situation column now present
+    s = Store(store)  # v7 fingerprint passes; situation column now present
     assert s.firings() == []
 
 
 @dolt_only
-def test_migrate_v5_to_v6_then_refuses(tmp_path):
+def test_migrate_v5_to_v7_then_refuses(tmp_path):
     store = str(tmp_path / "v5store")
     build_dolt_store(store, [ins.V5_SCHEMA])  # situation present, takeaways lack reach
     with pytest.raises(StoreContractError, match="upgrade to v6"):
         Store(store)
 
     msg = migrate(store)
-    assert "to v6" in msg
-    Store(store)  # v6 fingerprint passes
+    assert "to v7" in msg
+    Store(store)  # v7 fingerprint passes
 
-    with pytest.raises(StoreContractError, match="already v6"):
+    with pytest.raises(StoreContractError, match="already v7"):
         migrate(store)
+
+
+@dolt_only
+def test_migrate_v6_to_v7_adds_recall_column(tmp_path):
+    store = str(tmp_path / "v6store")
+    build_dolt_store(store, [ins.V6_SCHEMA])  # reach present, no violation_signature
+    with pytest.raises(StoreContractError, match="upgrade to v7"):
+        Store(store)
+
+    msg = migrate(store)
+    assert "to v7" in msg
+
+    s = Store(store)  # v7 fingerprint passes; violations table reads cleanly
+    assert s.violations() == []
+
+
+def test_migrate_sqlite_v6_to_v7(tmp_path):
+    """The one SQLite migration rung: a v6 SQLite store (created before the
+    recall column shipped) gains the v7 pieces in place."""
+    import sqlite3
+
+    store = tmp_path / "sqlstore"
+    store.mkdir()
+    conn = sqlite3.connect(store / "store.db")
+    conn.executescript(ins.V6_SCHEMA_SQLITE)
+    conn.close()
+    with pytest.raises(StoreContractError, match="upgrade to v7"):
+        Store(str(store))
+
+    msg = migrate(str(store))
+    assert "to v7" in msg
+
+    s = Store(str(store))  # v7 fingerprint passes
+    assert s.violations() == []
+    with pytest.raises(StoreContractError, match="already v7"):
+        migrate(str(store))
 
 
 def test_init_cli_end_to_end(host):

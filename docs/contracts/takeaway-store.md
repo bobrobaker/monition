@@ -1,8 +1,8 @@
-# Data contract — Monition store (v6)
+# Data contract — Monition store (v7)
 
 This contract is the spec of the code↔data boundary: it binds the Monition module
 (the machinery) to any Monition store (the data) — a per-project store directory
-containing the `takeaways`, `firings`, and `decisions` tables, addressed by path
+containing the `takeaways`, `firings`, `decisions`, and `violations` tables, addressed by path
 (convention: `<repo-root>/monition/`). Rows own *what fires when* (trigger-as-data);
 the module owns *how matching executes* and never reinterprets a field beyond what
 is written here.
@@ -26,6 +26,9 @@ Validated against a live reference store on 2026-06-11.
 | `firings` rows | module fire command, called by the disclosure executors | module reader (precision, noise, audit metrics); `monition score` (evidence for fire/suppress) |
 | `firings.outcome` | module rate command (human/agent judgment, after the fact) | module reader — the only ground-truth eval signal; `monition score` — evidence for EV computation |
 | `decisions` rows | `monition score`, called by disclosure executors | write-only Phase 3; Phase 4 reader for retrospective tuning |
+| `takeaways.violation_signature` | module set-signature command / `add --violation-signature` (authored at mine time, human-consented) | `monition eval-session` (the only machinery that interprets it) |
+| `firings.match_evidence` | module fire command (captured by the matcher at fire time) | module reader (Phase 7 trigger-module learning trains on exactly what production matched on) |
+| `violations` rows | `monition eval-session` (offline, mine-time) | module reader (`monition report` FN column; the trigger-broadening signal for Phase 7) |
 | `dump.sql` | `monition dump` (derived view, regenerated at commit) | fresh-clone restore only — **excluded input** for analytics |
 
 (Until the CMS cutover completes, CMS's `tools/takeaway*.py` remain the live
@@ -85,7 +88,7 @@ backfill and is captured at every fire. A v4 store — one whose `firings` lacks
 `monition migrate` is the repair path (an additive `ALTER TABLE firings`, leaves
 existing rows' new column NULL).
 
-**v6 (2026-06-18, current):** collapses the per-repo stores into one hub and carries
+**v6 (2026-06-18):** collapses the per-repo stores into one hub and carries
 the general/project distinction as **columns**, not physical boundaries. Adds `reach`
 (`general|project`) and `origin_repo` to `takeaways`, and `repo` to `firings`; **retires
 the `mirror` column**. `reach='general'` fires in any repo; `reach='project'` fires only
@@ -95,6 +98,21 @@ fire time — capture-or-lose, like v4 provenance and v5 `situation`. A v5 store
 `monition migrate` is the repair path: additive `ALTER`s (backfilling `reach='project'`
 and `origin_repo`/`firings.repo` from the store's own repo root, since a per-repo store
 belongs to exactly one repo), then `DROP COLUMN mirror`.
+
+**v7 (2026-07-01, current):** makes a row's ground truth observable — the recall
+column (Phase 6, framed by
+`docs/decisions/2026-07-01-row-lifecycle-pr-framing-and-mutation-track.md`). Adds
+(a) `violation_signature` to `takeaways` — an optional machine-checkable probe for
+the failure the row warns about (see `### Violation signatures`); (b)
+`match_evidence` to `firings` — the **full** evidence the trigger matched on,
+lossless where `trigger_context` is a bounded preview (Phase 7 trigger learning
+trains on exactly what production matched); (c) the `violations` table — one row per
+**not-fired∧hit** event (the failure occurred, the row did not fire), the
+false-negative cell ratings structurally cannot produce because ratings only see
+firings that happened. A v6 store — one whose `takeaways` lacks
+`violation_signature` — is **rejected with an explicit migrate-the-store message**;
+`monition migrate` is the repair path (additive `ALTER`s plus `CREATE TABLE
+violations`, does not touch existing rows — their new columns stay NULL).
 
 ## `takeaways` — per-field meaning
 
@@ -112,6 +130,7 @@ belongs to exactly one repo), then `DROP COLUMN mirror`.
 | `status` | enum `active\|retired` | Firing lifecycle only — see below. |
 | `reach` | enum `general\|project` | Where the row fires — see below. `general` = any repo; `project` = only `origin_repo`. Default `project`. |
 | `origin_repo` | varchar, nullable | Absolute repo root the row belongs to (the matcher gate for `project` rows). Set to the current repo at add time; backfilled from the store's repo root at v6 migration. |
+| `violation_signature` | text, nullable | **v7.** Optional machine-checkable probe for the failure the row warns about — see `### Violation signatures`. NULL = no probe exists; the row simply has no false-negative column (degrades to the precision-only view). Written by the narrow `set-signature` mutator or `add --violation-signature`; interpreted only by `monition eval-session`, **never** by the disclosure executors (the disclosure machinery stays dumb). |
 
 ### `trigger_spec` coordinate systems
 
@@ -150,6 +169,43 @@ belongs to exactly one repo), then `DROP COLUMN mirror`.
   firings still logged, injection cap still applied (the result still lands in
   the context window).
 
+### Violation signatures
+
+A violation signature is **data on the row** — a JSON object describing a
+machine-checkable probe for the failure the row warns about. It completes the row's
+confusion matrix: with a signature, the offline evaluator can observe
+**not-fired∧hit** (the failure happened and the row never fired), the recall signal
+ratings cannot produce. Signatures are authored at mine time for rows where a
+checkable probe exists; they are never mandatory.
+
+Spec format (one JSON object):
+
+- `{"kind": "transcript_regex", "pattern": "<Python regex>"}` — the only kind the
+  v7 evaluator executes. The pattern is matched with `re.search`, flags
+  `re.IGNORECASE | re.MULTILINE`, against the extracted text of a session
+  transcript (message/tool text content, not the raw JSONL framing).
+- Unknown `kind` values are **skipped with a note, never an error** — the field is
+  forward-extensible (e.g. a future `diff_regex` over the session's git diff)
+  without a contract break. An unparseable spec or a pattern that fails to compile
+  is likewise skipped fail-open and reported by the evaluator; it must never block
+  evaluation of other rows, and nothing on the hook path ever reads this field.
+- Authoring gate: the writer (`set-signature` / `add --violation-signature`)
+  validates JSON shape and, for `transcript_regex`, that the pattern compiles —
+  malformed specs are rejected at write time, so read-side skipping is the
+  exception path, not the norm.
+
+The signature probes for **the failure event itself** (the bad command ran, the
+error text appeared, the forbidden pattern was written) — not for the topic being
+discussed. A signature that matches mere discussion of the failure manufactures
+false FN events; prefer under-matching (missed FN events cost nothing — the row
+just stays precision-only) over over-matching. Two authoring cautions from live
+use: **the authoring session's own transcript quotes the pattern** (in
+`set-signature` arguments and testing) — never `eval-session` the session that
+authored a signature; backfill archived transcripts instead, where any match is
+organic. And **URL/artifact-shaped patterns match mentions as well as acts** — a
+pdf-URL pattern hits citation lists, not just fetches; anchor on the act's output
+when possible, and treat mention-shaped events skeptically in the rating pass.
+
 ### `status` and `reach` — two axes, one meaning each
 
 - `status` answers exactly one question: does this row fire. `active` is
@@ -182,7 +238,7 @@ One row per actual disclosure.
 | `fired_at` | datetime | Naive local server time. |
 | `session_id` | varchar, nullable | Harness session id. May be the literal string `"unknown"` (executor fallback) — treat as an anonymous bucket, not a real session. |
 | `trigger_kind` | varchar | Copy of the firing trigger kind, written by the executor. |
-| `trigger_context` | varchar(512), nullable | What matched. Coordinates by kind: `edit_path` → the repo-relative path that matched (same coordinate system as `trigger_spec` matching); `on_demand` → a prompt preview (≤200 chars); `session_start` → NULL. |
+| `trigger_context` | varchar(512), nullable | What matched, as a **bounded human-readable preview**. Coordinates by kind: `edit_path` → the repo-relative path that matched (same coordinate system as `trigger_spec` matching); `on_demand` → a prompt preview (≤200 chars); `session_start` → NULL. The lossless machine record is v7 `match_evidence` — never treat this preview as the training substrate. |
 | `outcome` | enum `helpful\|noise`, nullable | Post-hoc rating. **NULL means unrated — missing data, never "noise" and never "neutral".** |
 | `git_sha` | varchar(40), nullable | **v4 provenance.** Host-repo `HEAD` at fire time, captured by the write surface. NULL = not captured (a pre-v4 firing, or git unavailable) — never substituted. |
 | `git_dirty` | tinyint(1), nullable | **v4 provenance.** 1 if the host repo had uncommitted changes at fire time, else 0 — `git_sha` is misleading without it. NULL when `git_sha` is NULL (undeterminable). |
@@ -190,6 +246,7 @@ One row per actual disclosure.
 | `monition_version` | varchar(32), nullable | **v4 provenance.** Installed monition version that logged the firing — which module build scored/disclosed it, distinct from `git_sha` (the host repo, not monition). NULL = undeterminable. |
 | `situation` | text, nullable | **v5 firing-grain context.** A short decision-context excerpt at fire time (capped ~4000 chars): `on_demand` → the un-truncated user prompt; `edit_path` → an excerpt of the content being written/edited; `session_start` → NULL (its `session_id`+`fired_at` is the only locator). Impossible to backfill. The cheap-eval pairs this with a `session_id` join to the session archive (which holds only session-grain context). NULL = the executor had no excerpt, or a pre-v5 firing. |
 | `repo` | varchar, nullable | **v6 firing-grain context.** Host repo root at fire time, derived from `CLAUDE_PROJECT_DIR`/git — never the store's location (the store may be a shared hub). Recovers per-repo precision for `general`-reach rows, which fire across repos. Capture-or-lose, like the v4/v5 dimensions. NULL = a pre-v6 firing, or backfilled from the store's repo root at migration. |
+| `match_evidence` | text, nullable | **v7.** JSON record of **exactly what the trigger matched on**, full and lossless — where `trigger_context` is a bounded human-readable preview, this is the machine substrate Phase 7 trigger learning trains on. Shape by matching module: lexical `on_demand` → `{"module":"lexical","keyword":<the keyword that hit>,"query":<full query text>}`; semantic `on_demand` → `{"module":"semantic","score":<cosine>,"query":<full query text>}`; `edit_path` → `{"module":"glob","pattern":<the pattern that hit>,"path":<repo-relative path>}`; `session_start` → NULL (nothing is matched). Captured at fire time by the matcher (the only code that knows which keyword/pattern/score satisfied the trigger); capture-or-lose like the v4/v5/v6 dimensions. NULL = a pre-v7 firing, or a fire logged outside the matchers (manual `monition fire`, `log-recurrence`). |
 
 All four provenance fields are **capture-time-only and impossible to backfill**;
 they are written once at fire and never regenerated. They are nullable by
@@ -260,6 +317,42 @@ executors call `score()` before each potential disclosure.
 - **Read-back (Phase 4)**: the approved reader (`Store`) exposes `decisions()` for
   retrospective analysis; `monition report` and `monition tune` consume it.
 
+## `violations` — per-field meaning
+
+One row per observed **not-fired∧hit** event: a session in which a row's violation
+signature matched (the failure the row warns about occurred) and the row did **not**
+fire in that session. This is the false-negative cell of the row's confusion matrix
+— the trigger-broadening signal ratings structurally cannot produce. Written only by
+`monition eval-session` (offline, mine-time, fail-open); nothing on the blocking
+hook path reads or writes this table.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | int, auto | Violation id. |
+| `takeaway_id` | int | FK to `takeaways.id` (not DB-enforced; same referential contract as `firings`). |
+| `session_id` | varchar | Session in which the signature hit. Required — a violation is meaningless without the session it was observed in. |
+| `detected_at` | datetime | When the evaluator logged the event (naive local server time) — evaluation time, not failure time. |
+| `evidence` | text | The transcript excerpt the signature matched (the `re.search` match plus bounded surrounding context) — what a human reviews to confirm the event is real before acting on it. |
+| `repo` | varchar, nullable | Host repo root of the evaluated session, same semantics as `firings.repo`. |
+
+### Violation semantics
+
+- **Only the third cell is stored.** The evaluator classifies a session per
+  signature-bearing row into fired∧avoided / fired∧hit / not-fired∧hit and reports
+  all three, but persists only not-fired∧hit: fired∧avoided and fired∧hit are
+  derivable at read time (join `firings` on `(takeaway_id, session_id)` against the
+  eval output), while the FN event exists nowhere else.
+- **Dedup: at most one violation per `(takeaway_id, session_id)`.** Re-running the
+  evaluator over the same session is idempotent, never additive.
+- **A violation is not a firing.** It never enters precision denominators, never
+  affects per-session disclosure dedup, and never feeds the fire/suppress scorer as
+  rating evidence. Its consumers are `monition report` (the FN column) and the
+  Phase 7 mutation engine (trigger-broadening proposals).
+- **Attribution caution** (per
+  `docs/decisions/2026-06-18-noise-targets-the-filter-not-the-gate.md`): a violation
+  says the *trigger* missed the moment — it is evidence about trigger coverage,
+  not about payload quality, and Phase 7 must attribute it to the trigger layer.
+
 ## Tier-0 interchange format (lessons file)
 
 The serialization incubated projects use before they have a Monition store: a
@@ -327,6 +420,11 @@ is the host project's concern.
 - **Mirror state is not lifecycle.** A v1-dialect store (status domain containing
   `upstream_candidate`/`mirrored`) must be rejected with a migrate message — never
   mapped onto the v2 axes by the reader.
+- **A violation is not a firing.** Nothing was disclosed; a `violations` row must
+  never enter precision denominators, disclosure dedup, or scorer evidence counts.
+- **`trigger_context` is not `match_evidence`.** The former is a bounded preview
+  for humans; only the latter is the lossless record of what production matched
+  on. Trigger learning that trains on the preview trains on truncation artifacts.
 
 ## Validation requirements (tests must cover)
 
@@ -351,5 +449,17 @@ is the host project's concern.
       `--order-by priority` rating worklist.
 - [ ] Compaction re-arm: a `source: "compact"` session brief re-arms
       per-session dedup for firings logged before the marker.
+- [ ] A v6 store (`takeaways` lacks `violation_signature`) rejected with a message
+      naming the migration to v7, not a generic type mismatch.
+- [ ] `set-signature` rejects malformed JSON and a non-compiling
+      `transcript_regex` pattern at write time.
+- [ ] Evaluator: a signature hit with no firing in that session logs exactly one
+      violation; re-running the evaluator on the same session adds nothing
+      (idempotent); a hit with a firing logs nothing; an unknown signature kind or
+      broken pattern is skipped with a note, never an error.
+- [ ] `match_evidence` on a lexical hit carries the matching keyword and the
+      **un-truncated** query; on a semantic hit, the cosine score and full query;
+      on an `edit_path` hit, the matching pattern and repo-relative path.
+- [ ] `violations` rows excluded from precision and from disclosure dedup.
 - [ ] Live check: `monition report <store-path>` runs without writes
       (store working set unchanged after the run).

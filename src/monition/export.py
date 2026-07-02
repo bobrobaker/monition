@@ -80,6 +80,9 @@ def _record(firing, takeaway, stats):
         "trigger_kind": firing.trigger_kind,  # open varchar; "resurrection" = synthetic
         "trigger_context": firing.trigger_context,
         "situation": firing.situation,  # v5: firing-grain decision-context excerpt
+        # v7: lossless match evidence (JSON string) — what production matched
+        # on; the trigger-learning substrate. Additive, no schema_version bump.
+        "match_evidence": firing.match_evidence,
         "git_sha": firing.git_sha,
         "git_dirty": firing.git_dirty,
         "model": firing.model,

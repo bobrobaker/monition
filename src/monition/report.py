@@ -14,6 +14,7 @@ def render(store):
     takeaways = store.takeaways()
     firings = store.firings()
     decisions = store.decisions()
+    violations = store.violations()
     audits = audit(takeaways, firings)
     dq = decision_quality(decisions)
 
@@ -47,6 +48,24 @@ def render(store):
             f"{a.fires:>5} {a.helpful:>3} {a.noise:>3} {_pct(a.precision):>5}"
         )
     lines.append("")
+
+    # v7 recall column: not-fired∧hit events — the trigger-broadening signal
+    # ratings can't produce. Per contract, never folded into precision.
+    if violations:
+        by_row = {}
+        for v in violations:
+            by_row.setdefault(v.takeaway_id, []).append(v)
+        signed = sum(1 for t in takeaways if t.violation_signature)
+        lines.append(
+            f"False negatives (not-fired∧hit; {signed} signature-bearing "
+            f"row(s), {len(violations)} event(s)):")
+        for tid in sorted(by_row):
+            vs = by_row[tid]
+            sessions = ", ".join(v.session_id for v in vs[-3:])
+            lines.append(
+                f"  t{tid}: {len(vs)} missed session(s) (latest: {sessions})"
+                " — trigger too narrow?")
+        lines.append("")
 
     recs = [a for a in audits if a.recommendation]
     if recs:

@@ -174,7 +174,8 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
                 continue
         # result is None → fail-open fire (no decision row); else decision == 'fire'
         firing = store.fire(str(h["id"]), trigger_kind, session, context, model,
-                            situation, current_repo=current_repo)
+                            situation, current_repo=current_repo,
+                            evidence=h.get("evidence"))
         fid = (firing or "").split()[-1] if firing else "?"
         _notify_observer(session, h["one_liner"])
         lines.append(f"[t{h['id']}/f{fid}] {h['one_liner']}")

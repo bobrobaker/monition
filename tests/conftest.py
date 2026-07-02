@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from monition.init_sync import V6_SCHEMA_SQLITE
+from monition.init_sync import V7_SCHEMA_SQLITE
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +25,7 @@ def _isolate_state_home(monkeypatch, tmp_path):
     monkeypatch.delenv("MONITION_STORE", raising=False)
 
 # SQLite schema for test fixtures — same DDL that `monition init` uses.
-SCHEMA = V6_SCHEMA_SQLITE
+SCHEMA = V7_SCHEMA_SQLITE
 
 # Ground truth: t1 all-noise, t2 mixed, t3 never fires (general reach — fires in
 # every repo), t4 fires unrated, t5 retired, t6 general reach (active, fires).

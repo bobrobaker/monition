@@ -111,6 +111,13 @@ def _run_add(ws, args):
               "pulled on demand for free) or pass --force.", file=sys.stderr)
         return 2
     if args.resolve:
+        if args.violation_signature:
+            # a merge/log-helpful resolution lands on an EXISTING row — set the
+            # signature there explicitly, never drop it silently
+            print("--violation-signature does not combine with --resolve: "
+                  "resolve first, then `monition set-signature <id> '<json>'` "
+                  "on the resulting row.", file=sys.stderr)
+            return 2
         print(ws.resolve_add(args.resolve, args.kind, args.trigger_kind,
                              args.one_liner, args.trigger_spec, args.full_content,
                              args.scope, args.source, args.reach, args.origin_repo))
@@ -125,8 +132,25 @@ def _run_add(ws, args):
             print(_render_duplicate(dups))
             return 3
     print(ws.add(args.kind, args.trigger_kind, args.one_liner, args.trigger_spec,
-                 args.full_content, args.scope, args.source, args.reach, args.origin_repo))
+                 args.full_content, args.scope, args.source, args.reach, args.origin_repo,
+                 violation_signature=args.violation_signature))
     return 0
+
+
+def _run_set_signature(ws, args):
+    if args.clear and args.signature:
+        raise StoreContractError("pass a signature spec or --clear, not both")
+    if not args.clear and not args.signature:
+        raise StoreContractError("pass a JSON signature spec, or --clear")
+    return ws.set_signature(args.takeaway_id,
+                            None if args.clear else args.signature)
+
+
+def _run_eval_session(ws, args, repo):
+    from .evaluate import default_session_id, evaluate_session, render_report
+    session = args.session or default_session_id(args.transcript)
+    return render_report(evaluate_session(ws, args.transcript, session,
+                                          repo=repo))
 
 
 def main(argv=None):
@@ -166,6 +190,9 @@ def main(argv=None):
     s.add_argument("--force", action="store_true",
                    help="override the one-liner length cap and the "
                         "active-duplicate gate")
+    s.add_argument("--violation-signature", metavar="JSON",
+                   help="optional machine-checkable probe for the failure this "
+                        "row warns about (validated at write time)")
 
     s = lifecycle("list")
     s.add_argument("--status", default="active")
@@ -189,6 +216,24 @@ def main(argv=None):
     s = lifecycle("rate")
     s.add_argument("firing_id")
     s.add_argument("outcome", choices=["helpful", "noise"])
+
+    s = lifecycle("set-signature",
+                  help="set or clear a row's violation signature (JSON spec; "
+                       "validated at write time)")
+    s.add_argument("takeaway_id")
+    s.add_argument("signature", nargs="?",
+                   help='e.g. \'{"kind": "transcript_regex", "pattern": "..."}\'')
+    s.add_argument("--clear", action="store_true",
+                   help="remove the row's signature (it loses its FN column)")
+
+    s = lifecycle("eval-session",
+                  help="offline recall evaluator: classify a session against "
+                       "violation signatures; logs not-fired∧hit events "
+                       "(mine-time, never the hook path)")
+    s.add_argument("--transcript", required=True,
+                   help="session transcript path (JSONL or plain text)")
+    s.add_argument("--session",
+                   help="session id (default: the transcript filename stem)")
 
     s = lifecycle("log-recurrence",
                   help="log a mine-time recurrence (helpful firing) on an active row")
@@ -255,7 +300,7 @@ def main(argv=None):
     s = sub.add_parser("sync", help="refresh hook entries + skills (hash-checked)")
     s.add_argument("--root", help="host repo root (default: git toplevel)")
 
-    s = sub.add_parser("migrate", help="migrate a store up to the current schema (v6), cumulative")
+    s = sub.add_parser("migrate", help="migrate a store up to the current schema (v7), cumulative")
     s.add_argument("--store", help="store directory (default: <repo-root>/monition/)")
     s.add_argument("--fold-into", metavar="HUB",
                    help="fold --store's rows into this Dolt hub (Dolt→Dolt) instead of "
@@ -481,6 +526,8 @@ def main(argv=None):
                 "fire": lambda: ws.fire(args.takeaway_id, args.trigger_kind,
                                         args.session, args.context, current_repo=cr),
                 "rate": lambda: ws.rate(args.firing_id, args.outcome),
+                "set-signature": lambda: _run_set_signature(ws, args),
+                "eval-session": lambda: _run_eval_session(ws, args, cr),
                 "log-recurrence": lambda: "takeaway {} recurrence logged (helpful firing {})".format(
                     args.takeaway_id,
                     ws.log_recurrence(args.takeaway_id, context=args.context,

@@ -23,7 +23,7 @@ from .storage_backends import DoltBackend, SqliteBackend, StorageBackendError, _
 from .store import Store, StoreContractError
 from .store_write import val
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 # v2 DDL (takeaways + firings) — used to construct V1 test fixtures and as the
 # base for V3_SCHEMA. The contract's field tables are the source of truth.
@@ -113,6 +113,30 @@ V6_SCHEMA = (
     V5_SCHEMA + _TAKEAWAYS_REACH_DDL + _FIRINGS_REPO_DDL + _TAKEAWAYS_DROP_MIRROR_DDL
 )
 
+# v7: the recall column (Phase 6, decision 2026-07-01-row-lifecycle-pr-framing-
+# and-mutation-track). `violation_signature` is an optional machine-checkable
+# probe for the failure a row warns about, interpreted only by the offline
+# evaluator; `match_evidence` is the full, lossless record of what the trigger
+# matched on (`trigger_context` stays the bounded human preview); `violations`
+# holds observed not-fired∧hit events — the false-negative cell ratings cannot
+# produce. The ALTERs + CREATE are also the v6→v7 migration steps.
+_TAKEAWAYS_SIGNATURE_DDL = "ALTER TABLE takeaways ADD COLUMN violation_signature text;"
+_FIRINGS_EVIDENCE_DDL = "ALTER TABLE firings ADD COLUMN match_evidence text;"
+_VIOLATIONS_DDL = """\
+CREATE TABLE violations (
+  id int NOT NULL AUTO_INCREMENT,
+  takeaway_id int NOT NULL,
+  session_id varchar(64) NOT NULL,
+  detected_at datetime NOT NULL,
+  evidence text,
+  repo varchar(512),
+  PRIMARY KEY (id)
+);"""
+
+V7_SCHEMA = (
+    V6_SCHEMA + _TAKEAWAYS_SIGNATURE_DDL + _FIRINGS_EVIDENCE_DDL + _VIOLATIONS_DDL
+)
+
 # SQLite DDL — used by `monition init` (the default backend). SQLite types:
 # TEXT for varchar/datetime/enum; INTEGER for int/tinyint; NUMERIC for decimal.
 # Enum domains enforced via CHECK constraints at write time.
@@ -158,6 +182,23 @@ CREATE TABLE decisions (
 );
 """
 
+# The SQLite v6→v7 steps, individually executable (the SQLite backend shipped
+# at v6, so this is the only rung its migration ladder needs).
+_V7_STEPS_SQLITE = [
+    "ALTER TABLE takeaways ADD COLUMN violation_signature TEXT",
+    "ALTER TABLE firings ADD COLUMN match_evidence TEXT",
+    """CREATE TABLE violations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  takeaway_id INTEGER NOT NULL,
+  session_id TEXT NOT NULL,
+  detected_at TEXT NOT NULL,
+  evidence TEXT,
+  repo TEXT
+)""",
+]
+
+V7_SCHEMA_SQLITE = V6_SCHEMA_SQLITE + ";\n".join(_V7_STEPS_SQLITE) + ";\n"
+
 _V1_STATUS = "enum('active','retired','upstream_candidate','mirrored')"
 _V2_STATUS = "enum('active','retired')"
 
@@ -166,7 +207,7 @@ _V2_STATUS = "enum('active','retired')"
 # equal this; a test enforces it so the human-readable legend can't drift from the
 # generated content (see the v1/v2 mix-up that motivated this guard). Bump when
 # re-stripping a CMS routing change, alongside re-running tools/regen_from_cms.py.
-ROUTING_VERSION = 4
+ROUTING_VERSION = 5
 
 # SKILL_MINE_SESSION and METHOD_LESSON_ROUTING are GENERATED from CMS canonical by
 # tools/regen_from_cms.py and imported at the top of this module — do not hand-edit;
@@ -328,15 +369,15 @@ def init_store(store, dolt=False, dry_run=False):
         def make():
             os.makedirs(store, exist_ok=True)
             try:
-                DoltBackend(store).init(V6_SCHEMA)
+                DoltBackend(store).init(V7_SCHEMA)
             except StorageBackendError as e:
                 raise StoreContractError(str(e)) from e
-        act(f"create Monition store at {store} (v6 schema, dolt)", make)
+        act(f"create Monition store at {store} (v7 schema, dolt)", make)
     else:
         def make():
             os.makedirs(store, exist_ok=True)
-            SqliteBackend(os.path.join(store, "store.db")).init(V6_SCHEMA_SQLITE)
-        act(f"create Monition store at {store} (v6 schema, sqlite)", make)
+            SqliteBackend(os.path.join(store, "store.db")).init(V7_SCHEMA_SQLITE)
+        act(f"create Monition store at {store} (v7 schema, sqlite)", make)
     return changes
 
 
@@ -480,8 +521,39 @@ def _raw_sql(store_path, query):
     return json.loads(text).get("rows", []) if text else []
 
 
+def _migrate_sqlite(store_path, db_path):
+    """The SQLite migration ladder is v6→v7 only: the SQLite backend shipped at
+    v6, so no older SQLite store exists to migrate."""
+    backend = SqliteBackend(db_path)
+    t_cols = {r["Field"] for r in backend.describe("takeaways")}
+    if not t_cols:
+        raise StoreContractError(f"{store_path} has no takeaways table")
+    if "reach" not in t_cols:
+        raise StoreContractError(
+            f"{store_path} is a pre-v6 SQLite store — the SQLite backend shipped "
+            "at v6, so this store was not created by `monition init`; no "
+            "migration path exists")
+    f_cols = {r["Field"] for r in backend.describe("firings")}
+    steps = []
+    if "violation_signature" not in t_cols:
+        steps.append(_V7_STEPS_SQLITE[0])
+    if "match_evidence" not in f_cols:
+        steps.append(_V7_STEPS_SQLITE[1])
+    if not backend.describe("violations"):
+        steps.append(_V7_STEPS_SQLITE[2])
+    if not steps:
+        raise StoreContractError("store is already v7 — nothing to migrate")
+    try:
+        for step in steps:
+            backend.execute_sql(step)
+    except StorageBackendError as e:
+        raise StoreContractError(str(e)) from e
+    Store(store_path)  # the reader's fingerprint check is the success gate
+    return f"migrated {store_path} to v7"
+
+
 def migrate(store_path):
-    """Bring a store up to the current schema (v6). Cumulative — an older store
+    """Bring a store up to the current schema (v7). Cumulative — an older store
     traverses every step it is missing:
 
     - v1 → v2: split the overloaded status domain into status + mirror axes
@@ -490,7 +562,12 @@ def migrate(store_path):
     - v4 → v5: add the situational-excerpt column to firings
     - v5 → v6: add reach/origin_repo to takeaways + repo to firings (backfilled
       from this store's repo root), then retire the vestigial mirror column
+    - v6 → v7: add violation_signature to takeaways + match_evidence to firings,
+      create the violations table (all additive; existing rows stay NULL)
     """
+    if (not os.path.isdir(os.path.join(store_path, ".dolt"))
+            and os.path.exists(os.path.join(store_path, "store.db"))):
+        return _migrate_sqlite(store_path, os.path.join(store_path, "store.db"))
     if _dolt_bin() is None:
         raise StoreContractError("dolt binary not found on PATH or ~/.local/bin")
     if not os.path.isdir(os.path.join(store_path, ".dolt")):
@@ -500,18 +577,26 @@ def migrate(store_path):
     has_provenance = "git_sha" in firing_cols
     has_situation = "situation" in firing_cols
     has_firing_repo = "repo" in firing_cols
+    has_evidence = "match_evidence" in firing_cols
     try:
         _raw_sql(store_path, "DESCRIBE `decisions`")
         decisions_exist = True
     except StoreContractError:
         decisions_exist = False
+    try:
+        _raw_sql(store_path, "DESCRIBE `violations`")
+        violations_exist = True
+    except StoreContractError:
+        violations_exist = False
 
     cols = {r["Field"]: r["Type"] for r in _raw_sql(store_path, "DESCRIBE `takeaways`")}
     has_reach = "reach" in cols
+    has_signature = "violation_signature" in cols
 
     if (decisions_exist and has_provenance and has_situation
-            and has_reach and has_firing_repo):
-        raise StoreContractError("store is already v6 — nothing to migrate")
+            and has_reach and has_firing_repo
+            and has_signature and has_evidence and violations_exist):
+        raise StoreContractError("store is already v7 — nothing to migrate")
 
     status = cols.get("status")
     if status == _V1_STATUS:
@@ -561,20 +646,31 @@ def migrate(store_path):
     if "mirror" in live_cols:
         _raw_sql(store_path, _TAKEAWAYS_DROP_MIRROR_DDL)
 
+    # v6 -> v7: all additive; existing rows' new columns stay NULL.
+    if not has_signature:
+        _raw_sql(store_path, _TAKEAWAYS_SIGNATURE_DDL)
+    if not has_evidence:
+        _raw_sql(store_path, _FIRINGS_EVIDENCE_DDL)
+    if not violations_exist:
+        _raw_sql(store_path, _VIOLATIONS_DDL)
+
     Store(store_path)  # the reader's fingerprint check is the success gate
-    return f"migrated {store_path} to v6"
+    return f"migrated {store_path} to v7"
 
 
 # --- v6 fold: consolidate per-repo Dolt stores into the Dolt hub ----------
 
 _TAKEAWAY_COLS = ["created", "kind", "scope", "trigger_kind", "trigger_spec",
-                  "one_liner", "full_content", "source", "status", "reach", "origin_repo"]
+                  "one_liner", "full_content", "source", "status", "reach", "origin_repo",
+                  "violation_signature"]
 _FIRING_COLS = ["fired_at", "session_id", "trigger_kind", "trigger_context", "outcome",
-                "git_sha", "git_dirty", "model", "monition_version", "situation", "repo"]
+                "git_sha", "git_dirty", "model", "monition_version", "situation", "repo",
+                "match_evidence"]
 _FIRING_NUM = {"git_dirty"}
 _DECISION_COLS = ["session_id", "decided_at", "decision", "evidence_count",
                   "cold_start", "ev_score"]
 _DECISION_NUM = {"evidence_count", "cold_start", "ev_score"}
+_VIOLATION_COLS = ["session_id", "detected_at", "evidence", "repo"]
 
 
 def _numv(v):
@@ -614,14 +710,15 @@ def _insert_rows(path, table, full_columns, tuples, chunk=100):
 
 
 def fold_store(source_path, hub_path):
-    """Fold a per-repo **v6** Dolt store's rows into the Dolt hub (Dolt→Dolt only).
+    """Fold a per-repo **v7** Dolt store's rows into the Dolt hub (Dolt→Dolt only).
 
     Non-destructive to the source — it is read, never modified. The source must
-    already be v6 (run `monition migrate --store <source>` first) so reach/origin_repo
+    already be v7 (run `monition migrate --store <source>` first) so reach/origin_repo
     /firings.repo are set; the fold preserves them. Source ids are offset by the hub's
-    current MAX(id) per table so they never collide and the firings/decisions →
-    takeaways FK references stay intact. Idempotent guard: refuses if the hub already
-    holds this source's origin_repo. Conservation-checked, then the hub is committed."""
+    current MAX(id) per table so they never collide and the firings/decisions/
+    violations → takeaways FK references stay intact. Idempotent guard: refuses if the
+    hub already holds this source's origin_repo. Conservation-checked, then the hub is
+    committed."""
     if _dolt_bin() is None:
         raise StoreContractError("dolt binary not found on PATH or ~/.local/bin")
     for label, path in (("source", source_path), ("hub", hub_path)):
@@ -630,11 +727,12 @@ def fold_store(source_path, hub_path):
                 f"{label} {path} is not a Dolt database — the fold is Dolt→Dolt only")
 
     src_cols = {r["Field"] for r in _raw_sql(source_path, "DESCRIBE `takeaways`")}
-    if "reach" not in src_cols:
+    if "reach" not in src_cols or "violation_signature" not in src_cols:
         raise StoreContractError(
-            f"source {source_path} is not v6 (no `reach` column) — run "
+            f"source {source_path} is not v7 (missing `reach` or "
+            f"`violation_signature`) — run "
             f"`monition migrate --store {source_path}` first, then fold")
-    Store(hub_path)  # hub must pass the v6 fingerprint
+    Store(hub_path)  # hub must pass the v7 fingerprint
 
     origin = os.path.dirname(os.path.abspath(source_path))
     already = int(_raw_sql(
@@ -648,10 +746,13 @@ def fold_store(source_path, hub_path):
     takeaways = _raw_sql(source_path, "SELECT * FROM takeaways ORDER BY id")
     firings = _raw_sql(source_path, "SELECT * FROM firings ORDER BY id")
     decisions = _raw_sql(source_path, "SELECT * FROM decisions ORDER BY id")
+    violations = _raw_sql(source_path, "SELECT * FROM violations ORDER BY id")
 
-    t_base, f_base, d_base = (_max_id(hub_path, t)
-                              for t in ("takeaways", "firings", "decisions"))
-    before = tuple(_count(hub_path, t) for t in ("takeaways", "firings", "decisions"))
+    t_base, f_base, d_base, v_base = (
+        _max_id(hub_path, t)
+        for t in ("takeaways", "firings", "decisions", "violations"))
+    before = tuple(_count(hub_path, t)
+                   for t in ("takeaways", "firings", "decisions", "violations"))
 
     _insert_rows(hub_path, "takeaways", ["id"] + _TAKEAWAY_COLS, [
         _row_values(r, _TAKEAWAY_COLS, set(), [_numv(t_base + int(r["id"]))])
@@ -664,14 +765,20 @@ def fold_store(source_path, hub_path):
         _row_values(r, _DECISION_COLS, _DECISION_NUM,
                     [_numv(d_base + int(r["id"])), _numv(t_base + int(r["takeaway_id"]))])
         for r in decisions])
+    _insert_rows(hub_path, "violations", ["id", "takeaway_id"] + _VIOLATION_COLS, [
+        _row_values(r, _VIOLATION_COLS, set(),
+                    [_numv(v_base + int(r["id"])), _numv(t_base + int(r["takeaway_id"]))])
+        for r in violations])
 
-    after = tuple(_count(hub_path, t) for t in ("takeaways", "firings", "decisions"))
-    expected = (before[0] + len(takeaways), before[1] + len(firings), before[2] + len(decisions))
+    after = tuple(_count(hub_path, t)
+                  for t in ("takeaways", "firings", "decisions", "violations"))
+    expected = (before[0] + len(takeaways), before[1] + len(firings),
+                before[2] + len(decisions), before[3] + len(violations))
     if after != expected:
         raise StoreContractError(
             f"fold conservation failed: hub counts {after} != expected {expected} "
             f"(source: {len(takeaways)} takeaways / {len(firings)} firings / "
-            f"{len(decisions)} decisions)")
+            f"{len(decisions)} decisions / {len(violations)} violations)")
 
     DoltBackend(hub_path).snapshot(
         f"fold: {origin} into hub ({len(takeaways)} takeaways, {len(firings)} firings)")

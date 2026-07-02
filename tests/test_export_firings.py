@@ -51,6 +51,8 @@ EXPECTED_KEYS = {
     "situation", "git_sha", "git_dirty", "model", "monition_version",
     # head-not-tail rating-value signals (additive, no schema_version bump)
     "fire_count", "rated_count", "precision", "rating_priority",
+    # v7 lossless match evidence (additive, no schema_version bump)
+    "match_evidence",
 }
 DECISIONS_KEYS = {"decision", "ev_score", "cold_start", "evidence_count", "decided_at"}
 

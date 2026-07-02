@@ -36,7 +36,7 @@ def match_gotchas_impl(query, store_path=None):
         lines = []
         for h in hits:
             firing = store.fire(str(h["id"]), "on_demand", None, query[:200],
-                                current_repo=repo)
+                                current_repo=repo, evidence=h.get("evidence"))
             fid = (firing or "").split()[-1] if firing else "?"
             lines.append(f"[t{h['id']}/f{fid}] {h['one_liner']}")
         if not lines:

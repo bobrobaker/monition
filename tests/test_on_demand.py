@@ -47,12 +47,39 @@ def test_match_second_keyword(canonical_store):
     assert any(h["id"] == 7 for h in hits)
 
 
-def test_match_returns_id_and_one_liner_only(canonical_store):
+def test_match_hit_shape_carries_evidence(canonical_store):
+    """v7: hits carry id, one_liner, and the lossless match evidence."""
     ws = WriteStore(canonical_store)
     hits = _hits(ws, "migration")
     assert hits
     h = hits[0]
-    assert set(h.keys()) == {"id", "one_liner"}
+    assert set(h.keys()) == {"id", "one_liner", "evidence"}
+    ev = h["evidence"]
+    assert ev["module"] == "lexical"
+    assert ev["keyword"] and ev["keyword"].lower() in "migration"
+    assert ev["query"] == "migration"  # the full query, never truncated
+
+
+def test_fire_stores_match_evidence(store_copy):
+    """v7: the evidence dict from the matcher lands losslessly in
+    firings.match_evidence as JSON. (store_copy: this test writes a firing.)"""
+    ws = WriteStore(store_copy)
+    h = _hits(ws, "migration")[0]
+    ws.fire(str(h["id"]), "on_demand", "s-ev", "migration",
+            evidence=h["evidence"])
+    firing = ws.firings()[-1]
+    assert json.loads(firing.match_evidence) == h["evidence"]
+
+
+def test_edit_path_match_evidence_names_pattern(canonical_store):
+    """v7: an edit_path hit records which glob pattern hit, on which path."""
+    ws = WriteStore(canonical_store)
+    hits = json.loads(ws.match("src/anything.py"))
+    assert hits
+    ev = hits[0]["evidence"]
+    assert ev["module"] == "glob"
+    assert ev["path"] == "src/anything.py"
+    assert ev["pattern"] in (hits[0].get("trigger_spec") or "")
 
 
 def test_match_lexical_hits_never_capped(canonical_store):
