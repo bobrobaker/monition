@@ -27,10 +27,12 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 
 ## Context hygiene
 
-- **Docs lag code — trust the source, not the prose.** The v6 store model landed
-  (general/project scoping via `reach`+`origin_repo`; `mirror` retired; backend
-  default is Dolt for us — `docs/decisions/2026-06-18-dolt-default-ours-sqlite-external.md`);
-  the per-repo→hub fold (B04) is the one piece still pending CMS's hub path. Treat docs
+- **Docs lag code — trust the source, not the prose.** The store model is v7
+  (v6: general/project scoping via `reach`+`origin_repo`, `mirror` retired, backend
+  default Dolt for us — `docs/decisions/2026-06-18-dolt-default-ours-sqlite-external.md`;
+  v7: violation signatures + `match_evidence` + the `violations` table — the recall
+  column, Phase 6); the per-repo→hub fold (B04) is the one piece still pending CMS's
+  hub path. Treat docs
   as an index to *where* code lives, never as ground truth for *what it does*. Confirm
   any load-bearing claim against the source; when behavior is the question, run a quick
   test or REPL check rather than inferring from a doc.
@@ -70,7 +72,8 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 - **Synthetic store writes never touch the hub.** Instrumentation/measurement/test
   rows go to a scratch store (`--store` / `MONITION_STORE`, or a tmp SQLite), seeded
   from a `monition snapshot` when realistic corpus size matters, and discarded with
-  `rm` — writing them to the hub manufactures a "purge" need that gets served by a raw
+  `rm` — including hook sanity checks (piping a fabricated prompt into an executor):
+  verification is instrumentation. Writing them to the hub manufactures a "purge" need that gets served by a raw
   `dolt sql DELETE`: a blind single-write-path violation that can nuke rated firings
   (the eval substrate). Junk already in the hub → Dolt `revert`/`retire`, never a
   DELETE. (No purge/delete/modify primitive — decided 2026-06-21.)

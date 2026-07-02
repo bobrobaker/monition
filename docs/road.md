@@ -244,10 +244,21 @@ clause the phase paused with the finding recorded; no integration on an unproven
 
 ### Phase 6 — Violation signatures + firing-evidence capture (the recall column)
 
-**Status:** planned (framed 2026-07-01,
-`docs/decisions/2026-07-01-row-lifecycle-pr-framing-and-mutation-track.md`).
-Prerequisite for Phase 7 — sequencing is load-bearing: mutation without this signal
-mutates on ~8%-coverage vibes.
+**Status: complete (2026-07-01).** Store v7 (`violation_signature` +
+`match_evidence` + `violations`); `eval-session` mine-time evaluator;
+`set-signature`/`add --violation-signature` authoring; report FN section;
+monition 0.4.0. Framed by
+`docs/decisions/2026-07-01-row-lifecycle-pr-framing-and-mutation-track.md`.
+Mine-session routing v5 (CMS-integrated) runs the recall sweep in the rating
+pass and asks the signature question at row birth. **Exit gate met:** a 4-row
+seed batch + a 34-transcript backfill sweep captured 13 not-fired∧hit events,
+surfaced in `monition report`; the exemplar is t28 (a real bootstrap PEP 668
+failure in a session where the row never fired). Known caution for the rating
+pass: t131's URL-shape signature also matches citation lists (fetch vs.
+mention) — its 6 events need human review, and signatures quoted inside row
+text stay unsignable until the evaluator strips injected `[tN/fM]` lines
+(deferred to Phase 7's substrate work). Phase 7 is now gated only on signal
+*volume* accumulating via mine-time authoring.
 
 **Deliverable:** make a row's ground truth observable so its confusion matrix has a
 false-negative column. (a) An optional **violation signature** per row — a
@@ -273,8 +284,12 @@ the rating pass; firings verifiably store full match evidence.
 
 ### Phase 7 — The mutation engine (rows improve, not just fire-or-die)
 
-**Status:** planned (same framing decision). Gated on Phase 6 signal actually
-accumulating.
+**Status:** dispatched 2026-07-01 — workstream
+`docs/workstreams/mutation-engine/` (6 buckets, ordered by data-readiness:
+representation → behavior-locked refactor → ratings-backed calibration +
+attribution → tool-call module → proposal engine last, behind an explicit
+signal gate). Phase 6 exit met same day; the proposal engine (B06) stays gated
+on FN/match_evidence volume accumulating.
 
 **Deliverable:** rows mutate along the determinism ladder instead of only firing or
 dying. (a) **Trigger-module abstraction**: a row's trigger is a swappable, composable
