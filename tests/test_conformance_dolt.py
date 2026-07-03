@@ -20,8 +20,8 @@ pytestmark = pytest.mark.skipif(
     reason="dolt binary not available",
 )
 
-# Use V8_SCHEMA (MySQL DDL) for Dolt fixture
-from monition.init_sync import V8_SCHEMA as DOLT_SCHEMA
+# Use V9_SCHEMA (MySQL DDL) for Dolt fixture
+from monition.init_sync import V9_SCHEMA as DOLT_SCHEMA
 
 
 @pytest.fixture(scope="module")

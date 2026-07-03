@@ -95,3 +95,43 @@ only the B01 dataset and the B02 head (`src/monition/relevance/`).
 - **Corrects** road.md Phase 5's "spike-validated at 0.78 grouped-CV AUC" — that number
   was leakage-inflated; the honest figure is ~0.67 (this doc).
 - No `road.md §2` design position is superseded.
+
+## Update — 2026-07-02: revisit dispatched (B06); sequencing clause amended
+
+The revisit this doc prescribes is now scheduled as workstream bucket **B06_gate-revisit**:
+the rating corpus grew 129→594 rated on_demand firings / 46→137 distinct rows since the
+NO-GO, enough to honestly re-test both buried premises (metamatch and the head) under the
+same bar (LORO CV, 95% CI LB > 0.60), with a runtime-estimability check added for
+metamatch (no inline LLM on the hook path — an oracle-only GO does not integrate).
+
+One clause of this doc's disposition is **amended** (user-ratified, 2026-07-02): "B03+ do
+not start" no longer holds unconditionally. The gate stays per **scored** layer — no
+unproven scored layer ships, contract §2 unchanged — but B03's *skeleton* proceeds
+regardless of scored-layer verdicts, because it now has proven **deterministic** residents
+to host: the boilerplate prompt-gate (`2026-07-02-boilerplate-prompt-gate.md`, currently
+an ad-hoc `if` in hooks.py) and the candidate span-sanitization transform. Accreting
+deterministic gates outside the skeleton is the ad-hoc growth the cascade exists to
+prevent. B06's verdicts will be recorded here as a further Update.
+
+## Update — 2026-07-03: B06 verdicts — both revisit questions answered
+
+The honest re-test at 4.6× data (594 rated on_demand firings / 137 rows, dataset via the
+corrected B01 builder) resolves both premises this doc flagged:
+
+1. **The head is genuinely marginal, not under-measured.** LORO-CV AUC 0.657, 95% CI
+   [0.598, 0.715] — the CI tightened ~2.6× around the same ~0.66 point estimate June saw.
+   Formally FAIL (CI-LB 0.598 ≤ 0.60), but a usable operating point now exists (23% noise
+   suppressed @ 10% helpful loss). **The user accepted the head for integration as an
+   explicit post-hoc bar amendment** (B06 bucket Updates, 2026-07-03); the artifact is
+   serialized via the trainer's new `--accept-marginal` override (gate still prints FAIL)
+   to `~/.cache/monition/relevance/head-v1.json`.
+2. **The metamatch negative was true after all.** Honestly measured: AUC 0.552, CI
+   [0.502, 0.601]; P(noise|mismatch)=0.62 vs 0.52 on match; decorrelated from the head
+   (Spearman +0.05) yet zero conditional lift (rank-combined 0.645 vs 0.657 head-alone).
+   The spike buried it on untrustworthy evidence, but the verdict itself stands. Metamatch
+   is out; its runtime-estimator question is moot. Evaluator: `tools/eval_metamatch.py`;
+   oracle labels (haiku, human-spot-checked): `data/relevance-cascade/metaness_out.json`.
+
+Asymmetric-skepticism postscript: re-testing the negative was still the right call — the
+same audit that voided the 0.78 positive had voided this negative, and only the re-test
+could tell a wrongly-buried signal from a rightly-buried one.

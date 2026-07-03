@@ -31,7 +31,28 @@ from monition.relevance.head import RelevanceHead, build_features  # noqa: E402
 GATE_CI_LOWER_BOUND = 0.60  # B02 GO/NO-GO bar, set with the user up front (2026-06-21)
 DEFAULT_L2 = 8.0            # spike: logistic-on-product L2=8 won; heavy reg is the overfit defense
 DATASET = "data/relevance-cascade/labels.jsonl"
+EMBED_CACHE = "data/relevance-cascade/embed_cache.jsonl"
 ARTIFACT = "src/monition/relevance/artifacts/head-v1.json"
+
+
+def cached_embed_fn(cache_path):
+    """Disk-cached, value-identical stand-in for embed._embed_raw (B06: the model
+    never loads when the cache covers the corpus — see tools/embed_relevance_cache.py).
+    Misses fall through to the real embedding and are appended to the cache."""
+    from embed_relevance_cache import load_cache, text_key
+    cache = load_cache(cache_path)
+
+    def fn(texts):
+        missing = [t for t in texts if text_key(t) not in cache]
+        if missing:
+            print(f"embed cache: {len(missing)}/{len(texts)} misses (loading model)")
+            with open(cache_path, "a") as out:
+                for t, v in zip(missing, embed._embed_raw(missing)):
+                    cache[text_key(t)] = v
+                    out.write(json.dumps({"k": text_key(t), "v": v}) + "\n")
+        return [cache[text_key(t)] for t in texts]
+
+    return fn
 
 
 def _repo_path(rel):
@@ -55,9 +76,17 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--store", help="store path (default: resolve_store_path / MONITION_STORE)")
     ap.add_argument("--dataset", default=DATASET)
+    ap.add_argument("--embed-cache", default=EMBED_CACHE,
+                    help="JSONL embedding cache (tools/embed_relevance_cache.py); "
+                         "misses fall through to the live model")
     ap.add_argument("--l2", type=float, default=DEFAULT_L2)
     ap.add_argument("--out", default=ARTIFACT)
     ap.add_argument("--write", action="store_true", help="serialize the artifact on PASS")
+    ap.add_argument("--accept-marginal", action="store_true",
+                    help="serialize despite a gate FAIL — an explicit, user-ratified bar "
+                         "amendment (B06, 2026-07-03: CI-LB 0.598 accepted; see the bucket "
+                         "Updates). The gate verdict still prints FAIL; this only unlocks "
+                         "--write.")
     args = ap.parse_args(argv)
 
     dataset_path = args.dataset if os.path.isabs(args.dataset) else _repo_path(args.dataset)
@@ -86,7 +115,10 @@ def main(argv=None):
           f"helpful={int(labels.sum())}  noise={int((labels == 0).sum())}  "
           f"base_rate={labels.mean():.3f}")
 
-    features = build_features(prompts, rowtexts)  # embeds once
+    cache_path = args.embed_cache if os.path.isabs(args.embed_cache) else _repo_path(args.embed_cache)
+    embed_fn = cached_embed_fn(cache_path) if os.path.exists(cache_path) else None
+    print(f"embed cache: {'ON (' + cache_path + ')' if embed_fn else 'absent — embedding live'}")
+    features = build_features(prompts, rowtexts, embed_fn=embed_fn)  # embeds once
 
     # --- leak sanity (C1): per-row prior under LORO must be ~0.5 -----------------
     prior_auc = rce.per_row_prior_auc(labels, groups)
@@ -123,10 +155,14 @@ def main(argv=None):
           f"{'>' if lo > GATE_CI_LOWER_BOUND else '<='} {GATE_CI_LOWER_BOUND} "
           f"AND usable_point={usable}")
 
-    if not passed:
-        print("\nNO-GO: workstream pauses (B03+ do not start). Record the finding in a decision "
-              "doc and set the workstream Blocked.")
+    if not passed and not args.accept_marginal:
+        print("\nNO-GO: the artifact does not ship on this evidence. Record the finding "
+              "(per-layer verdict — workstream sequencing is B03's own call since the "
+              "2026-07-02 gate-invariant amendment).")
         return 1
+    if not passed:
+        print("\ngate FAIL overridden by --accept-marginal (user-ratified bar amendment, "
+              "B06 2026-07-03) — serializing anyway.")
 
     if args.write:
         full.train_auc = train_auc

@@ -52,6 +52,7 @@ def test_on_demand_lexical_exact(canonical_store, monkeypatch):
             {
                 "id": 7,
                 "one_liner": "on_demand: migration gotcha",
+                "trigger_spec": "migration, schema",
                 "evidence": {
                     "module": "lexical",
                     "keyword": "migration",
@@ -73,6 +74,7 @@ def test_on_demand_semantic_exact(canonical_store, monkeypatch):
             {
                 "id": 7,
                 "one_liner": "on_demand: migration gotcha",
+                "trigger_spec": "migration, schema",
                 "evidence": {
                     "module": "semantic",
                     "score": 0.8765,
@@ -105,6 +107,7 @@ def test_on_demand_broken_embeddings_fail_open_exact(canonical_store, monkeypatc
             {
                 "id": 7,
                 "one_liner": "on_demand: migration gotcha",
+                "trigger_spec": "migration, schema",
                 "evidence": {
                     "module": "lexical",
                     "keyword": "migration",

@@ -3,7 +3,13 @@ status: decided
 ---
 # 2026-06-18 · A noise rating targets the Filter, not the Gate
 
-**Status.** Design **direction**, investigation-grounded, **not implemented**.
+**Status.** **IMPLEMENTED 2026-07-03** — the Filter shipped as the typed relevance
+cascade, live on the passive `on_demand` path (workstream `relevance-cascade`
+B03/B04/B05; durable position: road.md §2 "Relevance filtering is a typed cascade";
+score logging = schema v9). The Gate (`score.py`) remains untouched and last-resort,
+exactly as this decision prescribed. Original status line preserved below for the
+history of how it got here.
+Was: design **direction**, investigation-grounded, not implemented.
 **Amended 2026-06-20** (audit-grounded): the deferred layer-set question is now
 resolved and the first-line lever is reframed — see *Update — 2026-06-20* at end.
 **Amended 2026-06-21** (spike-validated): the 06-20 cheap-signal reframe is itself

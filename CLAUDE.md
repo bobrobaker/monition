@@ -27,12 +27,13 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 
 ## Context hygiene
 
-- **Docs lag code — trust the source, not the prose.** The store model is v8
+- **Docs lag code — trust the source, not the prose.** The store model is v9
   (v6: general/project scoping via `reach`+`origin_repo`, `mirror` retired, backend
   default Dolt for us — `docs/decisions/2026-06-18-dolt-default-ours-sqlite-external.md`;
   v7: violation signatures + `match_evidence` + the `violations` table — the recall
   column, Phase 6; v8: `sem_threshold` + the `mutations` table — the mutation
-  track, Phase 7); the per-repo→hub fold (B04) is the one piece still pending CMS's
+  track, Phase 7; v9: `relevance_score`+`head_version` on firings — cascade score
+  logging, Phase 5 B04); the per-repo→hub fold (B04) is the one piece still pending CMS's
   hub path. Store access rides the resident `dolt sql-server`
   (`MONITION_SQL_SERVER=1` machine-wide since 2026-07-02) and, when the `[wire]`
   extra is installed, the pymysql wire transport (~1ms/query; fail-open to the

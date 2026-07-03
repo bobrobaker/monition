@@ -100,13 +100,14 @@ def _score_takeaway(takeaway_id, store, session, firings=None):
 # A prefix check, not a substring/contains check: a human prompt that merely
 # *mentions* a task-notification example mid-text is real user content, not
 # boilerplate, and must still be matched.
-_BOILERPLATE_PREFIXES = (
-    "<task-notification>",
-)
-
-
+#
+# B04: the prefix tuple's source of truth moved to the cascade skeleton
+# (relevance/cascade.py BOILERPLATE_PREFIXES — the gate resident); this
+# delegation keeps the pre-match position and the evidence bar above. Lazy
+# import: only prompt_hook pays it, never fire-hook/session-brief.
 def _is_boilerplate(prompt):
-    return prompt.startswith(_BOILERPLATE_PREFIXES)
+    from .relevance.cascade import BOILERPLATE_PREFIXES
+    return prompt.startswith(BOILERPLATE_PREFIXES)
 
 
 def _disabled():
@@ -203,8 +204,11 @@ def _notify_observer(session, slug):
 
 
 def _disclose(store, hits, trigger_kind, session, context=None, model=None,
-              situation=None, current_repo=None):
-    """Score-gate, log a firing, and format the injection line for each hit."""
+              situation=None, current_repo=None, scores=None, head_version=None):
+    """Score-gate, log a firing, and format the injection line for each hit.
+
+    `scores`: {takeaway_id: P(helpful)} from the cascade head, logged onto each
+    firing (v9, contract relevance-cascade.md §3); None off the passive path."""
     lines = []
     # One firings-table read per prompt, shared across every hit's score() call.
     firings = store.firings() if hits else None
@@ -227,19 +231,25 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
     # 3 subprocesses per hit). Fail-open: any batch problem falls back to the
     # slow-but-proven per-hit path; firings are never dropped silently.
     fids = None
+    score_of = (scores or {}).get
     if to_fire:
         try:
             fids = store.fire_batch(
-                [(str(h["id"]), h.get("evidence")) for h in to_fire],
+                [(str(h["id"]), h.get("evidence"), score_of(h["id"]))
+                 for h in to_fire],
                 trigger_kind, session, context, model, situation,
-                current_repo=current_repo)
+                current_repo=current_repo, head_version=head_version)
         except Exception as e:
             _log(f"[fire-batch-error] falling back to per-hit fire: {e}")
     for i, h in enumerate(to_fire):
         if fids is None:
             firing = store.fire(str(h["id"]), trigger_kind, session, context,
                                 model, situation, current_repo=current_repo,
-                                evidence=h.get("evidence"))
+                                evidence=h.get("evidence"),
+                                relevance_score=score_of(h["id"]),
+                                head_version=(head_version
+                                              if score_of(h["id"]) is not None
+                                              else None))
             fid = (firing or "").split()[-1] if firing else "?"
         else:
             fid = fids[i]
@@ -387,16 +397,72 @@ def prompt_hook():
                  f" session={session}")
             return
 
-        res = json.loads(store.on_demand_match(prompt, session, current_repo=repo))
+        # --- relevance cascade (B04): transforms gate the MATCHER input; the
+        # head scores the ORIGINAL prompt (train/infer parity — the head was
+        # trained on unsanitized `situation` texts, so pipeline purity loses to
+        # parity here). Passive path only; pulls (mcp, cli query) stay ungated.
+        # Kill switch: MONITION_CASCADE_DISABLE=1 → exactly today's behavior.
+        # Every failure falls open to the ungated path.
+        casc = None
+        if not os.environ.get("MONITION_CASCADE_DISABLE"):
+            try:
+                from .relevance import cascade as casc
+            except Exception as e:
+                _log(f"[cascade-error] import: {e}")
+        match_input = prompt
+        if casc is not None:
+            try:
+                match_input = casc.SpanSanitizer().apply(prompt) or prompt
+            except Exception as e:
+                _log(f"[cascade-error] sanitizer: {e}")
+                match_input = prompt
+
+        res = json.loads(store.on_demand_match(match_input, session,
+                                               current_repo=repo))
         hits, capped = res["hits"], res["capped"]
         trace.mark("matched")
         if capped:
             # never a silent truncation: note the cap in the state log too
             _log(f"[capped] {capped} semantic hit(s) over the injection cap"
                  f" session={session}")
+
+        scores, head_version = None, None
+        if casc is not None and hits:
+            try:
+                if os.path.exists(casc.default_artifact_path()):
+                    from . import embed as _embed_mod
+                    scorer = casc.L2HeadScorer(embed_fn=_embed_mod._embed)
+                    scored = casc.run_scorers(prompt[:SITUATION_CHARS], hits,
+                                              [scorer])
+                    for tag, detail in scored["trace"]:
+                        if tag.startswith("error:"):
+                            _log(f"[cascade-error] {tag} {detail}"
+                                 f" session={session} (scorer abstained,"
+                                 f" candidates fail open)")
+                    fired_ids = casc.commit_suppress_only(scored["belief"])
+                    kept = [h for h in hits if h["id"] in fired_ids]
+                    if len(kept) < len(hits):
+                        # name the suppressed rows + their scores: suppression
+                        # writes no firing row, so this line is the only
+                        # dogfood/audit trail (B05)
+                        gone = ", ".join(
+                            f"t{h['id']}@{scorer.last_probs.get(h['id'], -1):.4f}"
+                            for h in hits if h["id"] not in fired_ids)
+                        _log(f"[cascade] suppressed {len(hits) - len(kept)}"
+                             f" of {len(hits)} candidate(s): {gone}"
+                             f" session={session}")
+                    hits = kept
+                    scores = scorer.last_probs
+                    head_version = f"head-v{scorer.head.version}"
+                    trace.mark("cascaded")
+                # no artifact staged (external host) → quietly ungated
+            except Exception as e:
+                _log(f"[cascade-error] scoring, fell open ungated: {e}")
+
         lines = _disclose(store, hits, "on_demand", session, prompt[:200],
                           _session_model(data), situation=prompt[:SITUATION_CHARS],
-                          current_repo=repo)
+                          current_repo=repo, scores=scores,
+                          head_version=head_version)
         trace.mark("disclosed")
         if not lines:
             return

@@ -27,15 +27,21 @@ def _l2norm(matrix):
     return m / (np.linalg.norm(m, axis=1, keepdims=True) + 1e-9)
 
 
-def build_features(prompts, rowtexts):
+def build_features(prompts, rowtexts, embed_fn=None):
     """(prompts, rowtexts) -> raw product feature matrix (n x d). Embeds once.
 
     Pinned to embed._embed_raw + L2-normalize + elementwise product — the single feature
     definition shared by train and inference. NOT standardized here; standardization lives
     in the fitted head so train and infer apply the SAME shift/scale.
+
+    `embed_fn` substitutes the embedding call for offline runs (a disk-cached wrapper);
+    it must be value-identical to `embed._embed_raw` (the default) or the train/infer
+    parity invariant breaks.
     """
-    prompt_vecs = _l2norm(embed._embed_raw(list(prompts)))
-    row_vecs = _l2norm(embed._embed_raw(list(rowtexts)))
+    if embed_fn is None:
+        embed_fn = embed._embed_raw
+    prompt_vecs = _l2norm(embed_fn(list(prompts)))
+    row_vecs = _l2norm(embed_fn(list(rowtexts)))
     if prompt_vecs.shape != row_vecs.shape:
         raise ValueError(
             f"prompt/row embedding shape mismatch: {prompt_vecs.shape} vs {row_vecs.shape}"
@@ -70,7 +76,7 @@ class RelevanceHead:
 
     def __init__(self, weights, bias, mean, std, l2, model_name,
                  version=ARTIFACT_VERSION, feature_kind=FEATURE_KIND,
-                 train_auc=None, cv_auc=None, cv_ci=None):
+                 train_auc=None, cv_auc=None, cv_ci=None, operating_point=None):
         self.weights = np.asarray(weights, dtype=float)
         self.bias = float(bias)
         self.mean = np.asarray(mean, dtype=float)
@@ -82,6 +88,10 @@ class RelevanceHead:
         self.train_auc = train_auc
         self.cv_auc = cv_auc
         self.cv_ci = cv_ci
+        # B05: the chosen suppress threshold + its expected trade, stored WITH
+        # the head — an operating point is a property of the head version
+        # (a retrain re-selects it); None = not yet chosen for this artifact.
+        self.operating_point = operating_point
 
     @classmethod
     def fit(cls, raw_features, labels, l2, model_name=None, **meta):
@@ -116,6 +126,7 @@ class RelevanceHead:
                 "train_auc": self.train_auc,
                 "cv_auc": self.cv_auc,
                 "cv_ci": self.cv_ci,
+                "operating_point": self.operating_point,
             }, fh, indent=2)
 
     @classmethod
@@ -139,4 +150,5 @@ class RelevanceHead:
             data["model_name"], version=data["version"],
             feature_kind=data["feature_kind"], train_auc=data.get("train_auc"),
             cv_auc=data.get("cv_auc"), cv_ci=data.get("cv_ci"),
+            operating_point=data.get("operating_point"),
         )

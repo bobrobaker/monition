@@ -21,6 +21,11 @@ SIM_THRESHOLD = 0.6
 # path is unchanged. Fail-open is absolute: a missing/wedged daemon must never block.
 DAEMON_IDLE_TIMEOUT = 300  # seconds with no connection → the daemon exits
 _DAEMON_CONNECT_TIMEOUT = 5  # a wedged daemon must not stall a prompt
+# ONNX runtime's arena allocator grows but never shrinks, so one large request
+# permanently inflates the daemon (observed: 106MB → 1.8GB, 2026-07-03). Above this
+# RSS the daemon exits after serving; callers fall back in-process and respawn a
+# fresh one, so the ceiling costs at most one warm-up.
+DAEMON_RSS_MAX_MB = 600
 
 _model = None
 
@@ -70,7 +75,10 @@ def _embed_raw(texts):
         cache_dir = _weights_dir()
         os.makedirs(cache_dir, exist_ok=True)
         _model = TextEmbedding(model_name=MODEL_NAME, cache_dir=cache_dir)
-    return [[float(x) for x in v] for v in _model.embed(texts)]
+    # batch_size caps ONNX attention memory (batch × seq_len² × heads): fastembed's
+    # default 256 is fine for short row texts but spikes to multi-GB on batches of
+    # 512-token prompts (full `situation` texts) — 16 keeps peak ~hundreds of MB.
+    return [[float(x) for x in v] for v in _model.embed(texts, batch_size=16)]
 
 
 def warm():
@@ -84,6 +92,16 @@ def warm():
         return "fastembed not installed (pip install 'monition[embed]') — semantic matching disabled, skipped"
     _embed_raw(["warm"])  # forces the weight download into _weights_dir()
     return f"embedding weights staged at {_weights_dir()}"
+
+
+def _rss_mb():
+    """Own resident set size in MB via /proc (Linux-only, like the socket path).
+    0 on any read problem — fail-open: an unreadable statm must not kill the daemon."""
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") // (1024 * 1024)
+    except Exception:
+        return 0
 
 
 def _daemon_enabled():
@@ -192,6 +210,8 @@ def run_daemon(idle_timeout=DAEMON_IDLE_TIMEOUT):
                 return  # idle → exit
             with conn:
                 _serve_one(conn)
+            if _rss_mb() > DAEMON_RSS_MAX_MB:
+                return  # arena bloated past the ceiling → exit; next caller respawns fresh
     finally:
         srv.close()
         try:

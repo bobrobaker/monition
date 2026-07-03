@@ -95,14 +95,33 @@ def _port_open(port):
         s.close()
 
 
+def _serves_this_store(pid, store_path):
+    """The pid in the .info file must actually serve THIS store. A copied or
+    stale .info can name a live pid serving a DIFFERENT store — a `cp -r`'d hub
+    carries the hub's lock, and the wire client would then connect to the real
+    hub's server and (via its single-db fallback) silently read AND write the
+    wrong database. Found live during B04's smoke (2026-07-03): a scratch copy
+    of the hub wrote its firings into the hub. The server's cwd is the store it
+    serves; require it to be ours. /proc unreadable (non-Linux, perms) → True:
+    keep the prior pid+port behavior rather than disabling wire."""
+    try:
+        return (os.path.realpath(f"/proc/{pid}/cwd")
+                == os.path.realpath(store_path))
+    except OSError:
+        return True
+
+
 def running(store_path):
-    """A server is *accepting* on this store — info file + live PID + open port.
-    The gate must require accepting, not just a live PID: a server that has bound
-    the store lock but isn't yet listening would let a racing `dolt sql -q` fall
-    through to direct access and hit the read-only lock. Cheap when healthy (a
-    localhost connect is instant); only a wedged server pays the probe timeout."""
+    """A server is *accepting* on this store — info file + live PID serving THIS
+    store + open port. The gate must require accepting, not just a live PID: a
+    server that has bound the store lock but isn't yet listening would let a
+    racing `dolt sql -q` fall through to direct access and hit the read-only
+    lock. Cheap when healthy (a localhost connect is instant); only a wedged
+    server pays the probe timeout."""
     info = _read_info(store_path)
-    return bool(info and _pid_alive(info[0]) and _port_open(info[1]))
+    return bool(info and _pid_alive(info[0])
+                and _serves_this_store(info[0], store_path)
+                and _port_open(info[1]))
 
 
 def address(store_path):
@@ -110,7 +129,9 @@ def address(store_path):
     The wire client (storage_backends, `[wire]` extra) connects here instead of
     spawning the dolt CLI per query; same accepting-gate as running()."""
     info = _read_info(store_path)
-    if info and _pid_alive(info[0]) and _port_open(info[1]):
+    if (info and _pid_alive(info[0])
+            and _serves_this_store(info[0], store_path)
+            and _port_open(info[1])):
         return ("127.0.0.1", info[1])
     return None
 

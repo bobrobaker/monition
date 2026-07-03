@@ -15,7 +15,7 @@ import pytest
 
 from monition import dolt_server
 from monition.cli import main
-from monition.init_sync import V8_SCHEMA
+from monition.init_sync import V9_SCHEMA
 from monition.storage_backends import DoltBackend, _dolt_bin
 from monition.store_write import WriteStore
 
@@ -37,7 +37,7 @@ def dolt_store(tmp_path):
     """A throwaway Dolt store seeded with one takeaway (FK target for firings).
     Teardown always stops any sql-server this test left running."""
     path = str(tmp_path / "store")
-    build_dolt_store(path, [V8_SCHEMA, _SEED])
+    build_dolt_store(path, [V9_SCHEMA, _SEED])
     yield path
     dolt_server.stop(path)
 
@@ -137,3 +137,28 @@ def test_concurrent_writes_lossy_without_server(dolt_store, monkeypatch):
     errs = [e for e in _fire_concurrently(dolt_store, 10) if e]
     assert not dolt_server.running(dolt_store)  # nothing spawned
     assert errs  # contention bit at least once
+
+
+def test_foreign_lock_file_not_treated_as_this_stores_server(tmp_path):
+    """A copied/stale .info naming a live pid that serves a DIFFERENT store must
+    not resolve — a cp -r'd hub carries the hub's lock, and honoring it routed a
+    scratch store's reads AND writes into the real hub via the wire client's
+    single-db fallback (found live, B04 smoke 2026-07-03)."""
+    store = tmp_path / "scratch-store"
+    dolt_dir = store / ".dolt"
+    os.makedirs(dolt_dir)
+    # our own pid: alive, but its cwd is not the store dir → foreign
+    with open(dolt_dir / "sql-server.info", "w") as f:
+        f.write(f"{os.getpid()}:3306:deadbeef")
+    assert not dolt_server._serves_this_store(os.getpid(), str(store))
+    assert dolt_server.address(str(store)) is None
+    assert not dolt_server.running(str(store))
+
+
+def test_own_store_lock_still_resolves(tmp_path, monkeypatch):
+    """The ownership check must not break the healthy case: a pid whose cwd IS
+    the store dir passes (port probe short-circuits separately)."""
+    store = tmp_path / "own-store"
+    os.makedirs(store / ".dolt")
+    monkeypatch.chdir(store)
+    assert dolt_server._serves_this_store(os.getpid(), str(store))

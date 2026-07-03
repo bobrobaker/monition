@@ -104,3 +104,13 @@ takeaway-store.md`) if pursued.
   (back-compat), and remember Dolt omits NULL columns from JSON (`row.get`, not `row[]`).
 - **anti-substitution**: a logged score is tied to the *head version* that produced it —
   log `head_version` alongside, or the score is uninterpretable after a retrain.
+- **wired (B04, 2026-07-03 — schema v9)**: `firings.relevance_score decimal(6,5)` (the
+  head's P(helpful) for this prompt×row pair) + `firings.head_version varchar(64)`
+  (`"head-v{artifact.version}"`). Producer: `prompt_hook`'s disclosure only (the passive
+  `on_demand` path through the cascade); both columns are NULL for pulls, other trigger
+  kinds, cascade-disabled runs (`MONITION_CASCADE_DISABLE=1`), hosts without a staged
+  artifact, and all pre-v9 rows. Cascade-suppressed candidates write **no firing row at
+  all** (same rationale as the boilerplate gate: no row to batch-mis-rate); suppression
+  counts go to the state log (`[cascade] suppressed N of M`). The read-side `Firing`
+  reader deliberately does not select the columns yet — widening it would break reads on
+  un-migrated stores; the consumer that needs scores (B05 / retraining) widens it then.

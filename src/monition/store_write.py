@@ -498,12 +498,16 @@ class WriteStore(Store):
             if evidence is not None:
                 lexical.append({
                     "id": r["id"], "one_liner": r["one_liner"],
+                    "trigger_spec": r.get("trigger_spec"),
                     "evidence": evidence,
                 })
             else:
                 rest.append(r)
         trace.mark("match:lexical_done")
-        semantic = [{"id": r["id"], "one_liner": r["one_liner"], "evidence": ev}
+        # trigger_spec rides along for the cascade head's row half (B04) —
+        # additive key; the disclosure line and pull surfaces ignore it
+        semantic = [{"id": r["id"], "one_liner": r["one_liner"],
+                     "trigger_spec": r.get("trigger_spec"), "evidence": ev}
                     for r, ev in modules.semantic_rank(rest, query)]
         # dedup before capping so already-disclosed hits don't consume cap slots
         lexical = self._not_yet_fired(lexical, session)
@@ -544,7 +548,8 @@ class WriteStore(Store):
         return json.dumps(self._not_yet_fired(rows, session))
 
     def fire(self, takeaway_id, trigger_kind, session=None, context=None,
-             model=None, situation=None, current_repo=None, evidence=None):
+             model=None, situation=None, current_repo=None, evidence=None,
+             relevance_score=None, head_version=None):
         # v4 provenance: git state of the *host repo* (current_repo), not the store
         # dir — under a v6 hub `os.path.dirname(self.path)` is the hub, not the repo.
         # current_repo is None only for mine-time self-calls (recurrence logging),
@@ -556,37 +561,45 @@ class WriteStore(Store):
         git_sha, git_dirty = _git_provenance(provenance_root)
         self._sql(self._FIRINGS_INSERT + self._firing_values(
             takeaway_id, trigger_kind, session, context, git_sha, git_dirty,
-            model, situation, current_repo, evidence))
+            model, situation, current_repo, evidence,
+            relevance_score, head_version))
         row = self._sql("SELECT MAX(id) AS id FROM firings")
         return f"firing {row[0]['id']}"
 
     _FIRINGS_INSERT = (
         "INSERT INTO firings (takeaway_id, fired_at, session_id, trigger_kind,"
         " trigger_context, git_sha, git_dirty, model, monition_version, situation,"
-        " repo, match_evidence) VALUES "
+        " repo, match_evidence, relevance_score, head_version) VALUES "
     )
 
     def _firing_values(self, takeaway_id, trigger_kind, session, context,
                        git_sha, git_dirty, model, situation, current_repo,
-                       evidence):
+                       evidence, relevance_score=None, head_version=None):
         # v7 match evidence: the full, lossless record of what the trigger
         # matched on (dict from the matcher), serialized here. None for fires
         # logged outside the matchers (manual fire, log-recurrence).
+        # v9 relevance_score/head_version: the cascade's P(helpful) + artifact
+        # version (contract relevance-cascade.md §3) — NULL off the passive path.
         evidence_json = json.dumps(evidence) if evidence is not None else None
+        score_sql = "NULL" if relevance_score is None else f"{float(relevance_score):.5f}"
         return (
             f"({iid(takeaway_id)}, NOW(), {self._val(session)},"
             f" {self._val(trigger_kind)}, {self._val(context)}, {self._val(git_sha)},"
             f" {bval(git_dirty)}, {self._val(model)}, {self._val(_monition_version())}, {self._val(situation)},"
-            f" {self._val(current_repo)}, {self._val(evidence_json)})"
+            f" {self._val(current_repo)}, {self._val(evidence_json)},"
+            f" {score_sql}, {self._val(head_version)})"
         )
 
     def fire_batch(self, hits, trigger_kind, session=None, context=None,
-                   model=None, situation=None, current_repo=None):
+                   model=None, situation=None, current_repo=None,
+                   head_version=None):
         """Fire every hit of one prompt in ONE INSERT (hook hot path, Phase 8 —
         `fire()` costs two subprocess spawns per hit plus a git-provenance
         subprocess each; a multi-hit prompt paid all of it per hit).
-        `hits`: [(takeaway_id, evidence_or_None), ...]. Returns the firing ids
-        aligned with `hits` order.
+        `hits`: [(takeaway_id, evidence_or_None, relevance_score_or_None), ...]
+        (v9: the cascade's per-hit P(helpful); `head_version` is per-batch — one
+        artifact scores a whole prompt). Returns the firing ids aligned with
+        `hits` order.
 
         Id recovery does NOT assume batch ids are consecutive: it re-reads the
         newest rows for THIS session and matches them back by takeaway_id.
@@ -600,8 +613,9 @@ class WriteStore(Store):
         git_sha, git_dirty = _git_provenance(provenance_root)
         self._sql(self._FIRINGS_INSERT + ", ".join(
             self._firing_values(tid, trigger_kind, session, context, git_sha,
-                                git_dirty, model, situation, current_repo, ev)
-            for tid, ev in hits))
+                                git_dirty, model, situation, current_repo, ev,
+                                score, head_version if score is not None else None)
+            for tid, ev, score in hits))
         rows = self._sql(
             "SELECT id, takeaway_id FROM firings"
             f" WHERE session_id = {self._val(session)}"
@@ -617,7 +631,7 @@ class WriteStore(Store):
         for r in reversed(rows):
             by_takeaway.setdefault(int(r["takeaway_id"]), []).append(int(r["id"]))
         ids = []
-        for tid, _ in hits:
+        for tid, _, _ in hits:
             pool = by_takeaway.get(int(tid))
             if not pool:
                 raise StoreContractError(

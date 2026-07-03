@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from monition.init_sync import V8_SCHEMA_SQLITE
+from monition.init_sync import V9_SCHEMA_SQLITE
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +23,17 @@ def _isolate_state_home(monkeypatch, tmp_path):
     a store set it explicitly."""
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
     monkeypatch.delenv("MONITION_STORE", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_head_artifact(monkeypatch, tmp_path):
+    """The cascade's head scorer engages only when the artifact exists — and on
+    a dev machine the REAL artifact is staged under ~/.cache, which would pull
+    the live embedding stack into every prompt-hook test. Point the default
+    path into the test tmp dir: absent unless a test stages one there."""
+    import monition.relevance.cascade as _cascade
+    monkeypatch.setattr(_cascade, "default_artifact_path",
+                        lambda: str(tmp_path / "head-artifact.json"))
 
 
 # Daemon opt-ins are stripped at IMPORT time, not in the fixture above: with
@@ -38,7 +49,7 @@ os.environ.pop("MONITION_SQL_SERVER", None)
 os.environ.pop("MONITION_EMBED_DAEMON", None)
 
 # SQLite schema for test fixtures — same DDL that `monition init` uses.
-SCHEMA = V8_SCHEMA_SQLITE
+SCHEMA = V9_SCHEMA_SQLITE
 
 # Ground truth: t1 all-noise, t2 mixed, t3 never fires (general reach — fires in
 # every repo), t4 fires unrated, t5 retired, t6 general reach (active, fires).

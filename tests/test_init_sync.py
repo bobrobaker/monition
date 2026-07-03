@@ -351,7 +351,7 @@ def test_migrate_v1_to_v8(tmp_path):
         Store(store)
 
     msg = migrate(store)  # cumulative: v1 -> v2 -> ... -> v8
-    assert "to v8" in msg
+    assert "to v9" in msg
 
     s = Store(store)  # v8 fingerprint check passes post-migration
     rows = {t.id: t for t in s.takeaways()}
@@ -374,7 +374,7 @@ def test_migrate_v3_to_v8_adds_provenance(tmp_path):
         Store(store)
 
     msg = migrate(store)
-    assert "to v8" in msg
+    assert "to v9" in msg
 
     s = Store(store)  # v8 fingerprint passes; provenance + situation now present
     assert s.firings() == []  # empty store reads cleanly post-migration
@@ -388,7 +388,7 @@ def test_migrate_v4_to_v8_adds_situation(tmp_path):
         Store(store)
 
     msg = migrate(store)
-    assert "to v8" in msg
+    assert "to v9" in msg
 
     s = Store(store)  # v8 fingerprint passes; situation column now present
     assert s.firings() == []
@@ -402,10 +402,10 @@ def test_migrate_v5_to_v8_then_refuses(tmp_path):
         Store(store)
 
     msg = migrate(store)
-    assert "to v8" in msg
+    assert "to v9" in msg
     Store(store)  # v8 fingerprint passes
 
-    with pytest.raises(StoreContractError, match="already v8"):
+    with pytest.raises(StoreContractError, match="already v9"):
         migrate(store)
 
 
@@ -417,7 +417,7 @@ def test_migrate_v6_to_v8_adds_recall_column(tmp_path):
         Store(store)
 
     msg = migrate(store)
-    assert "to v8" in msg
+    assert "to v9" in msg
 
     s = Store(store)  # v8 fingerprint passes; violations table reads cleanly
     assert s.violations() == []
@@ -437,11 +437,11 @@ def test_migrate_sqlite_v6_to_v8(tmp_path):
         Store(str(store))
 
     msg = migrate(str(store))
-    assert "to v8" in msg
+    assert "to v9" in msg
 
     s = Store(str(store))  # v8 fingerprint passes
     assert s.violations() == []
-    with pytest.raises(StoreContractError, match="already v8"):
+    with pytest.raises(StoreContractError, match="already v9"):
         migrate(str(store))
 
 
@@ -464,7 +464,7 @@ def test_migrate_sqlite_v7_to_v8_rebuild_preserves_rows(tmp_path):
         Store(str(store))
 
     msg = migrate(str(store))
-    assert "to v8" in msg
+    assert "to v9" in msg
 
     s = Store(str(store))
     rows = {t.id: t for t in s.takeaways()}

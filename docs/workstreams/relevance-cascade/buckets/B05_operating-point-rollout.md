@@ -1,7 +1,7 @@
 # Bucket B05: Operating Point + Rollout
 
 Parent: ../workstream.md
-State: later
+State: done
 Goal for session: Pick the firing threshold, measure noise reduction, dogfood, ship.
 Target duration: 25 min
 Context budget: Read parent + this bucket + required touchpoints only.
@@ -61,13 +61,34 @@ Context budget: Read parent + this bucket + required touchpoints only.
 
 ## Done criteria
 
-- [ ] Operating point chosen + recorded with the head version.
-- [ ] Realized effect measured on human test + dogfood, reported as numbers.
-- [ ] Fork fail-open verified.
-- [ ] Decision doc marked implemented; `road.md §2` backlinked.
-- [ ] Bucket `Updates` records the shipped operating point + measured win.
-- [ ] Parent progress updated → workstream complete.
+- [x] Operating point chosen + recorded with the head version.
+- [x] Realized effect measured on human test + dogfood, reported as numbers.
+- [x] Fork fail-open verified.
+- [x] Decision doc marked implemented; `road.md §2` backlinked.
+- [x] Bucket `Updates` records the shipped operating point + measured win.
+- [x] Parent progress updated → workstream complete.
 
 ## Updates
 
 - 2026-06-21 Created. Handoff: none yet. Gotchas: none yet.
+- 2026-07-03 **Done — workstream complete.** Operating point chosen by the user from
+  the honest LORO curve: **suppress_threshold 0.0139** (expected 23% noise blocked /
+  10% helpful lost; adjacent candidates 0.0043 = 14%/5% and 0.0410 = 30%/15% were
+  declined — "doesn't distinguish that much, keep as is"). Stored **inside the head
+  artifact** (`operating_point` field, head.py serializer extended; scorer resolution:
+  explicit arg → artifact → module fallback constant — no magic threshold in code).
+  Realized effect: all-rated LORO 23%/10% (by construction); **held-out human test
+  split (n=87): 17% noise blocked / 0% helpful lost** — 0% is small-sample-favorable
+  (28 helpful ⇒ ~4% quantization), the calibrated expectation stays 23%/10%. Dogfood
+  (first live day): 5 real suppression events across 3 sessions; **live suppression
+  ran ~32% of candidates vs ~17% expected** — small n (19) on a meta-heavy day;
+  suppression log lines now carry row ids + scores (`t<id>@<p>`) so the follow-up can
+  rate them; **re-measure checkpoint proposed to the user** (t216-style self-retiring
+  row; rating two evidenced firings f6529/f6446 helpful also proposed — the permission
+  layer correctly declined unrequested substrate writes mid-bucket). Fork fail-open:
+  pinned by `test_no_artifact_fires_ungated_null_score` (no artifact → today's
+  behavior, NULL scores). Backlinks: road.md §2 durable position added; Phase 5
+  status COMPLETE; `### Next` updated; `2026-06-18-noise-targets-the-filter` marked
+  IMPLEMENTED. **Follow-on captured (road.md §2, not scheduled): per-row suppress
+  thresholds** — user's design instinct, the suppression-side analog of
+  `sem_threshold`, feasible once per-row score+rating volume accumulates.

@@ -23,7 +23,7 @@ from .storage_backends import DoltBackend, SqliteBackend, StorageBackendError, _
 from .store import Store, StoreContractError
 from .store_write import val
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 # v2 DDL (takeaways + firings) — used to construct V1 test fixtures and as the
 # base for V3_SCHEMA. The contract's field tables are the source of truth.
@@ -267,6 +267,27 @@ _V8_STEPS_SQLITE = _V8_TAKEAWAYS_REBUILD_SQLITE + [_MUTATIONS_DDL_SQLITE]
 
 V8_SCHEMA_SQLITE = V7_SCHEMA_SQLITE + ";\n".join(_V8_STEPS_SQLITE) + ";\n"
 
+# v9 (Phase 5 / relevance-cascade B04): per-firing relevance-score logging —
+# contract `relevance-cascade.md` §3 (decided in B01, 2026-06-21). The passive
+# fire path logs the L2' head's scalar P(helpful) plus the artifact version on
+# every firing it lets through, accumulating retraining data at zero marginal
+# cost. Additive + nullable: pulls, other trigger kinds, cascade-disabled runs,
+# and all pre-v9 rows stay NULL. Like v4 provenance this is capture-or-lose.
+_FIRINGS_RELEVANCE_DDL = (
+    "ALTER TABLE firings"
+    " ADD COLUMN relevance_score decimal(6,5),"
+    " ADD COLUMN head_version varchar(64);"
+)
+
+V9_SCHEMA = V8_SCHEMA + _FIRINGS_RELEVANCE_DDL
+
+_V9_STEPS_SQLITE = [
+    "ALTER TABLE firings ADD COLUMN relevance_score NUMERIC",
+    "ALTER TABLE firings ADD COLUMN head_version TEXT",
+]
+
+V9_SCHEMA_SQLITE = V8_SCHEMA_SQLITE + ";\n".join(_V9_STEPS_SQLITE) + ";\n"
+
 _V1_STATUS = "enum('active','retired','upstream_candidate','mirrored')"
 _V2_STATUS = "enum('active','retired')"
 
@@ -446,14 +467,14 @@ def init_store(store, dolt=False, dry_run=False):
         def make():
             os.makedirs(store, exist_ok=True)
             try:
-                DoltBackend(store).init(V8_SCHEMA)
+                DoltBackend(store).init(V9_SCHEMA)
             except StorageBackendError as e:
                 raise StoreContractError(str(e)) from e
         act(f"create Monition store at {store} (v8 schema, dolt)", make)
     else:
         def make():
             os.makedirs(store, exist_ok=True)
-            SqliteBackend(os.path.join(store, "store.db")).init(V8_SCHEMA_SQLITE)
+            SqliteBackend(os.path.join(store, "store.db")).init(V9_SCHEMA_SQLITE)
         act(f"create Monition store at {store} (v8 schema, sqlite)", make)
     return changes
 
@@ -600,7 +621,7 @@ def _raw_sql(store_path, query):
 
 def _migrate_sqlite(store_path, db_path):
     """The SQLite migration ladder starts at v6 (the SQLite backend shipped at
-    v6, so no older SQLite store exists to migrate): v6→v7→v8."""
+    v6, so no older SQLite store exists to migrate): v6→v7→v8→v9."""
     backend = SqliteBackend(db_path)
     t_cols = {r["Field"] for r in backend.describe("takeaways")}
     if not t_cols:
@@ -624,15 +645,17 @@ def _migrate_sqlite(store_path, db_path):
         steps.extend(_V8_TAKEAWAYS_REBUILD_SQLITE)
     if not backend.describe("mutations"):
         steps.append(_MUTATIONS_DDL_SQLITE)
+    if "relevance_score" not in f_cols:
+        steps.extend(_V9_STEPS_SQLITE)
     if not steps:
-        raise StoreContractError("store is already v8 — nothing to migrate")
+        raise StoreContractError("store is already v9 — nothing to migrate")
     try:
         for step in steps:
             backend.execute_sql(step)
     except StorageBackendError as e:
         raise StoreContractError(str(e)) from e
     Store(store_path)  # the reader's fingerprint check is the success gate
-    return f"migrated {store_path} to v8"
+    return f"migrated {store_path} to v9"
 
 
 def migrate(store_path):
@@ -649,6 +672,8 @@ def migrate(store_path):
       create the violations table (all additive; existing rows stay NULL)
     - v7 → v8: add sem_threshold to takeaways, widen trigger_kind with
       'tool_call', create the mutations table (atomic; existing rows stay NULL)
+    - v8 → v9: add relevance_score + head_version to firings (additive; the
+      cascade's per-firing score logging, contract relevance-cascade.md §3)
     """
     if (not os.path.isdir(os.path.join(store_path, ".dolt"))
             and os.path.exists(os.path.join(store_path, "store.db"))):
@@ -663,6 +688,7 @@ def migrate(store_path):
     has_situation = "situation" in firing_cols
     has_firing_repo = "repo" in firing_cols
     has_evidence = "match_evidence" in firing_cols
+    has_relevance = "relevance_score" in firing_cols
     try:
         _raw_sql(store_path, "DESCRIBE `decisions`")
         decisions_exist = True
@@ -688,8 +714,9 @@ def migrate(store_path):
     if (decisions_exist and has_provenance and has_situation
             and has_reach and has_firing_repo
             and has_signature and has_evidence and violations_exist
-            and has_threshold and has_tool_call and mutations_exist):
-        raise StoreContractError("store is already v8 — nothing to migrate")
+            and has_threshold and has_tool_call and mutations_exist
+            and has_relevance):
+        raise StoreContractError("store is already v9 — nothing to migrate")
 
     status = cols.get("status")
     if status == _V1_STATUS:
@@ -755,8 +782,12 @@ def migrate(store_path):
     if not mutations_exist:
         _raw_sql(store_path, _MUTATIONS_DDL)
 
+    # v8 -> v9: cascade score logging — additive; existing rows stay NULL.
+    if not has_relevance:
+        _raw_sql(store_path, _FIRINGS_RELEVANCE_DDL)
+
     Store(store_path)  # the reader's fingerprint check is the success gate
-    return f"migrated {store_path} to v8"
+    return f"migrated {store_path} to v9"
 
 
 # --- v6 fold: consolidate per-repo Dolt stores into the Dolt hub ----------

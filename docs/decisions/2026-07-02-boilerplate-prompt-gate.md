@@ -108,6 +108,14 @@ scope and does not depend on `L2′` (the piece that failed its gate).
   an invisible one.
 - Do **not** conflate this with the relevance-cascade workstream's revival —
   that workstream stays paused on `L2′`; this decision does not reopen it.
+  *(Status note, 2026-07-02, later the same day: the workstream WAS re-opened —
+  on independent grounds (its NO-GO doc's revisit note + the corpus growing
+  129→594 rated on_demand), not because of this gate. The anti-goal's substance
+  stands: this decision is not the reopening's justification. Under the re-opened
+  plan, B03's typed skeleton absorbs this gate as its first resident with the
+  pre-match position preserved — the "prefix skip, not a candidate-level filter"
+  rationale above is carried forward as a named constraint in the workstream's
+  amended gate invariant.)*
 
 ## Rating-candidate priority (companion investigation, no change made)
 

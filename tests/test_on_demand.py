@@ -48,12 +48,13 @@ def test_match_second_keyword(canonical_store):
 
 
 def test_match_hit_shape_carries_evidence(canonical_store):
-    """v7: hits carry id, one_liner, and the lossless match evidence."""
+    """v7: hits carry id, one_liner, and the lossless match evidence
+    (+ trigger_spec since B04 — the cascade head's row half rides along)."""
     ws = WriteStore(canonical_store)
     hits = _hits(ws, "migration")
     assert hits
     h = hits[0]
-    assert set(h.keys()) == {"id", "one_liner", "evidence"}
+    assert set(h.keys()) == {"id", "one_liner", "trigger_spec", "evidence"}
     ev = h["evidence"]
     assert ev["module"] == "lexical"
     assert ev["keyword"] and ev["keyword"].lower() in "migration"

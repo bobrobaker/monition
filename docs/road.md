@@ -67,6 +67,20 @@ a refinement conversation, not enough to implement directly.
   reach the template at monition's consent gate, then `monition sync` propagates
   to graduated projects via the existing skill hash-check. (Confer resolution
   2026-06-12, lesson-routing-ownership.)
+- **Relevance filtering is a typed cascade on the passive path only (Phase 5,
+  live 2026-07-03).** The pipeline skeleton (`src/monition/relevance/cascade.py`)
+  has three stage grains — pre-match prompt **gates** (boilerplate), match-input
+  **transforms** (span sanitizer), pair-level **scorers** (the L2′ head) — and new
+  filters land as residents there, never as ad-hoc `if`s in hooks. Per-scored-layer
+  GO/NO-GO gating (honest LORO CV vs a pre-set bar) decides scorer residency;
+  deterministic residents need evidence, not a gate. Explicit pulls are never
+  filtered. The operating point ships inside the head artifact (property of the
+  head version; user-chosen: 0.0139 → 23% noise / 10% helpful, 2026-07-03), and
+  every passive firing logs `relevance_score`+`head_version` (schema v9) — the
+  retraining substrate. Kill switch `MONITION_CASCADE_DISABLE=1`. Follow-on
+  candidate (captured, not scheduled): **per-row suppress thresholds** — the
+  suppression-side analog of `sem_threshold`, feasible once per-row score+rating
+  volume accumulates.
 - **Replay-ablation runner is monition's machinery; the tier-3 discipline
   configures it.** Monition owns the per-condition replay-ablation runner
   (snapshot→worktree→re-run→diff): variation-source-agnostic (axis is a free
@@ -219,9 +233,29 @@ query only — never the backbone).
 
 ### Phase 5 — Trigger/Filter refinement (the relevance cascade)
 
-**Status:** paused 2026-06-21 at B02 — **NO-GO** (`docs/workstreams/relevance-cascade/`).
-The head did not clear the usefulness gate; B03–B05 did not start, no artifact shipped.
-Verdict + full result: `docs/decisions/2026-06-21-relevance-cascade-b02-no-go.md`.
+**Status:** COMPLETE 2026-07-03 — **the cascade is LIVE on the passive on_demand
+path** with the user-chosen operating point (0.0139 → expected 23% noise / 10%
+helpful; held-out test split realized 17%/0% at n=87) shipped inside the head
+artifact; workstream `relevance-cascade` closed (B01–B06). Durable position:
+road.md §2 "Relevance filtering is a typed cascade". Live-vs-offline suppression
+gap flagged at close (32% of candidates on early live traffic vs ~17% expected —
+small n, meta-heavy day; re-measure checkpoint proposed). Live shape: boilerplate gate (pre-match) →
+span-sanitizer (matcher input only; the head scores the original prompt for parity) →
+L2′ head scorer via the warm daemon → suppress-only commit (threshold 0.014, B05
+finalizes); per-firing score logging shipped as **schema v9**
+(`firings.relevance_score`+`head_version`, hub migrated); kill switch
+`MONITION_CASCADE_DISABLE=1`; pulls ungated (verified). B03 shipped the typed skeleton
+(`src/monition/relevance/cascade.py`). B06 before it
+answered both re-opened premises: the head is B06 answered both re-opened premises: the head is
+genuinely marginal (LORO 0.657, CI [0.598, 0.715] at 4.6× data — FAIL by 0.002,
+**user-accepted** as an explicit bar amendment; artifact at
+`~/.cache/monition/relevance/head-v1.json`), and metamatch's buried negative was TRUE
+(AUC 0.552, no lift over the head — out). B03 = typed layer skeleton
+(gate/transform/scorer): boilerplate prompt-gate refactored in as first resident
+(pre-match position preserved), span-sanitization transform candidate, head scorer;
+operating point picked in B05. History: paused 2026-06-21 at B02 NO-GO; re-opened
+2026-07-02 on corpus growth 129→594 / 46→137
+(`docs/decisions/2026-06-21-relevance-cascade-b02-no-go.md`, Updates 07-02/07-03).
 
 **Deliverable (attempted):** reduce `on_demand` firing noise (the dominant noise source)
 with a cost-ordered, certainty-gated **cascade** of relevance Layers on the *passive* fire
@@ -235,7 +269,7 @@ inline LLM (the LLM is an offline label oracle only). Grounded:
 C1/C2); under honest row-disjoint leave-row-out CV the head is **~0.67**, and the 95% CI
 lower bound (~0.55–0.58) does not clear the 0.60 usefulness bar — a *volume* wall (only 46
 distinct rows), not a model bug. Operationally the head suppresses only ~20% of noise at
-≥90% helpful retention. Revisit (overnight/autonomous candidate) must re-open two false
+≥90% helpful retention. Revisit (owner: Bolun, interactive — B06) must re-open two false
 spike premises: the 0.78 headline AND the prematurely-buried "metamatch" negative (also
 measured on the same leaky n=102 fixture, so equally untrusted). Cascade orchestrator (B03)
 and metamatch are **not live** — only the B01 dataset + B02 head exist (`src/monition/relevance/`).
@@ -371,8 +405,9 @@ completes via the CLI path).
 
 ### Next
 
-Phase 5 (above) is the ongoing phase, dispatched 2026-06-21. Phase 4 exited
-2026-06-12.
+Phase 5 completed 2026-07-03 (workstream `relevance-cascade`, B01–B06 — incl. the
+NO-GO pause 06-21→07-02 and the B06 gate revisit). Phase 8 completed 2026-07-02.
+No phase is currently dispatched.
 
 **Rating-collection discipline — confer resolved 2026-06-17 (CMS owns the discipline; monition the substrate).** The fire/suppress gate (`monition score`) was starved — 0 ratings collected organically (the fire-time `rate:` hint never fires), CMS store 33% rated, host repos 0%. Resolution: CMS owns an **evidence-gated** rating pass in `mine-session` (LLM-auto; rate only firings the in-context session evidences, mandatory per-rating citation, no-evidence→no-rating; head-not-tail policy; one batched lighter-than-rows consent gate). Canonical in CMS; domain-stripped mirror in monition's `SKILL_MINE_SESSION`, propagated to **adopted** repos via `monition sync` (verified: sync materializes skills full-text + stamp hash-check). Tier-0 untouched. **monition obligations:** (done 2026-06-17) `export-firings --unrated-only`/`--session`; head-not-tail metric on `export-firings` — per-row `fire_count`/`rated_count`/`precision`/`rating_priority` + `--order-by priority` (boundary math in `export.py`, `rating_priority = fire_count × closeness`, closeness `1.0` for cold-start else peaks at `EV_THRESHOLD`); (follow-up, unbuilt) fold CMS's handed-off template into `SKILL_MINE_SESSION` + bump `VERSION`; trigger `monition sync` across adopted repos once the template lands.
 

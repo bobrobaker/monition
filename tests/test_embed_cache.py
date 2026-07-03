@@ -14,7 +14,7 @@ def _fake_fastembed(captured):
             captured["model_name"] = model_name
             captured["cache_dir"] = cache_dir
 
-        def embed(self, texts):
+        def embed(self, texts, batch_size=256):
             return [[0.1, 0.2] for _ in texts]
 
     mod = types.ModuleType("fastembed")

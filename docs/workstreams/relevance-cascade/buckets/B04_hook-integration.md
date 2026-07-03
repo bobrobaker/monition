@@ -1,7 +1,7 @@
 # Bucket B04: Hook Integration
 
 Parent: ../workstream.md
-State: later
+State: done
 Goal for session: Gate the passive on_demand path with the cascade; leave pulls ungated.
 Target duration: 30 min
 Context budget: Read parent + this bucket + required touchpoints only.
@@ -73,12 +73,49 @@ producer/consumer? what could break? how validated?
 
 ## Done criteria
 
-- [ ] Cascade gates `prompt_hook` only; pulls verified ungated.
-- [ ] Dedup preserved; `kind` (if needed) sourced without per-row re-query.
-- [ ] Score logging wired + firings contract bumped, OR explicitly recorded as not-logging.
-- [ ] Bucket `Updates` records the integration seam + any contract bump.
-- [ ] Parent progress updated.
+- [x] Cascade gates `prompt_hook` only; pulls verified ungated.
+- [x] Dedup preserved; row half sourced without per-row re-query (`trigger_spec`
+  rides the hit dicts).
+- [x] Score logging wired + firings contract bumped (schema v9).
+- [x] Bucket `Updates` records the integration seam + the contract bump.
+- [x] Parent progress updated.
 
 ## Updates
 
 - 2026-06-21 Created. Handoff: none yet. Gotchas: none yet.
+- 2026-07-03 **Done.** Integration seam: `prompt_hook` only — gate (boilerplate, now
+  single-sourced from `cascade.BOILERPLATE_PREFIXES`, hooks' duplicate deleted) →
+  span-sanitizer on the **matcher input only** (the head scores the ORIGINAL
+  `prompt[:SITUATION_CHARS]` — train/infer parity beats pipeline purity; the head was
+  trained on unsanitized situations) → `L2HeadScorer(embed_fn=embed._embed)` (warm
+  daemon path) → `commit_suppress_only` → suppressed candidates write **no firing row**
+  (state log `[cascade] suppressed N of M`). Kill switch `MONITION_CASCADE_DISABLE=1`;
+  no artifact staged → quietly ungated; scorer errors ride the orchestrator trace and
+  are logged (`error:*` entries), candidates fail open. Pulls (`mcp_server`, `cli
+  query`) verified live: full recall, no cascade fields. **Contract bump: schema v9**
+  — `firings.relevance_score decimal(6,5)` + `firings.head_version varchar(64)`,
+  additive/nullable; migrate ladder + fresh-init DDL both backends; hub migrated
+  BEFORE the writer edit (t176 — editable install, live hooks flip at save); reader
+  deliberately not widened (would break reads on un-migrated stores; B05 widens when
+  it consumes scores). Contracts updated: relevance-cascade §3 (wired terms),
+  takeaway-store firings table (v9 rows), CLAUDE.md v9 line.
+- 2026-07-03 **Found + fixed a live cross-store routing bug via the smoke test.** A
+  `cp -r`'d scratch copy of the hub carries `.dolt/sql-server.info`; `dolt_server.
+  address()` validated only pid-alive + port-open, so the wire client connected to the
+  REAL hub's resident server, and its single-db fallback silently selected the hub's
+  database — the scratch's reads AND writes transparently hit the hub, defeating the
+  documented scratch-store isolation. Fix: `_serves_this_store()` — the lock's pid
+  must have `/proc/<pid>/cwd` == the store dir, else the lock is foreign/stale
+  (regression tests in test_dolt_server.py). **Hub contamination from the pre-fix
+  smoke:** ~6 unrated firings, `session_id='b04smoke1'` (f6549+), left in place per
+  the no-DELETE rule — identifiable and excludable; do NOT rate them (never disclosed
+  to a real session).
+- 2026-07-03 Validation: full suite 361 passed / 1 pre-existing failure (CMS-regen
+  drift, predates the workstream). Live smoke on a scratch hub copy: work prompt
+  fires with scores logged (0.20–0.63, head-v1); pulls ungated (11 hits, no cascade).
+  **Perf note for B05:** scratch timing (1.2–1.5s) is CLI-path, NOT production-
+  representative (hub runs server+wire); known cascade adders per scoring prompt =
+  lazy numpy import (~100ms, cold subprocess) + one warm daemon embed call + artifact
+  JSON load. B05 measures on the production config. **Suppression rate not observed
+  live** (smoke scores all > 0.014; mechanism pinned by unit tests) — B05's rollout
+  measurement is the live verification.
