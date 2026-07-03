@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-18 · Warm daemon for semantic `on_demand` matching (host the embedding model out of the hook)
 
 **Status.** Design decision, **investigation-backed this session, not implemented.**

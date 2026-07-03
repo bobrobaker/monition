@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-17 · Storage backend: SQLite default, Dolt optional behind a seam
 
 > **Amended 2026-06-18** by

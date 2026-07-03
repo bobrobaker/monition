@@ -38,6 +38,34 @@ def test_decisions_field_types(canonical_store):
     assert d.decision in ("fire", "suppress")
 
 
+def test_decisions_cold_start_survives_stringified_scalars(canonical_store, monkeypatch):
+    """Dolt's CLI-JSON-through-server shape stringifies every scalar, including
+    tinyint booleans (storage_backends._wire_norm_row: "int / Decimal — CLI
+    emits these as strings"). bool("0") is True in Python, so an un-cast
+    bool(r["cold_start"]) misclassified every decision row as cold-start
+    regardless of its real value (the reported bug: `monition report`/`tune`
+    permanently showed 100% cold-start against the live Dolt hub).
+
+    Reproduces the shape directly over a real backend's rows rather than
+    depending on a live resident dolt sql-server, whose stringification only
+    kicks in once it's actually mediating the query — a timing-dependent
+    condition unsuited to a deterministic test."""
+    store = Store(canonical_store)
+    real_execute = store._backend.execute_sql
+
+    def stringify_cold_start(sql):
+        rows = real_execute(sql)
+        if "FROM decisions" not in sql:
+            return rows
+        return [{**r, "cold_start": str(r["cold_start"])} for r in rows]
+
+    monkeypatch.setattr(store._backend, "execute_sql", stringify_cold_start)
+    decisions = store.decisions()
+    # Ground truth (conftest ROWS, in ORDER BY id): d1 cold_start=1, d2/d3 cold_start=0.
+    assert [d.cold_start for d in decisions] == [True, False, False]
+    assert all(isinstance(d.cold_start, bool) for d in decisions)
+
+
 def test_decisions_orphan_raises(store_copy):
     ws = WriteStore(store_copy)
     ws._sql(

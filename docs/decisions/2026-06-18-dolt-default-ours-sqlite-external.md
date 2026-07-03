@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-18 · Backend: Dolt is the default for *our own* hub; SQLite stays for external/standalone
 
 **This is the active source of truth for "which storage backend."** It amends
@@ -42,3 +45,16 @@ by audience keeps both true instead of flip-flopping a single global default.
 **Flip-flop note.** SQLite-default (2026-06-17) → Dolt-for-us (here) is a reversal of the
 *our-own* default within a day. It is principled (the hub changed the premise), but the
 churn itself is flagged for `/postmortem` per the v6 charter.
+
+## Update — 2026-07-02: the flagged postmortem ran; Step-3 eval verdict
+
+The flip-flop note above was taken up by the 2026-06-19 CMS-run postmortem. Its
+prescribed artifacts all landed (this doc's banner pair; road.md §2's settled
+backend-model line; hub rows t190/t191), and the deferred Step-3 eval ran 2026-07-02 as
+a two-condition cold-judge test (fixtures only, neutral question): with the banners
+alone, a fresh judge correctly reads amendment-not-contradiction but goes looking for
+the live-registry entry to verify; with road.md §2's settled line included, the residual
+disappears and the judge affirms the provenance model outright. **Verdict: effective** —
+and artifact 1 (the banners) proved stronger alone than the postmortem predicted; the
+registry line absorbs the remaining verify-the-registry impulse. (n=1 per condition,
+qualitative per postmortem 3b.)

@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-18 · Single store with general/project scoping (replaces per-repo isolation)
 
 **Status.** **Ratified** via confer with CMS, 2026-06-18 (thread:

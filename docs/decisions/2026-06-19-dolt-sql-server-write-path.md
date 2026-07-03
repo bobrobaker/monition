@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-19 · `dolt sql-server` write-path seam (concurrent-write contention fix)
 
 **Status.** Built 2026-06-19. `src/monition/dolt_server.py` (lifecycle),

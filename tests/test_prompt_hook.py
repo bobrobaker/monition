@@ -10,7 +10,7 @@ import json
 import pytest
 
 import monition.embed as me
-from monition.hooks import prompt_hook
+from monition.hooks import _log_path, prompt_hook
 
 
 @pytest.fixture(autouse=True)
@@ -89,3 +89,52 @@ def test_firing_logged_with_prompt_context(host_repo, monkeypatch, capsys):
     )
     assert rows and rows[0]["trigger_kind"] == "on_demand"
     assert rows[0]["trigger_context"] == "schema migration question"
+
+
+# ---- harness-boilerplate gate (task-notification and lookalikes) ----------
+
+
+def test_task_notification_skipped_no_firing(host_repo, monkeypatch, capsys):
+    import os
+    from monition.store_write import WriteStore
+    # Carries "migration" so it would hit t7 if matching ran at all — proves
+    # the empty output is the gate, not a lexical miss.
+    notification = (
+        "<task-notification>\n"
+        "<task-id>abc123</task-id>\n"
+        "<summary>Agent \"migration\" finished</summary>\n"
+        "</task-notification>"
+    )
+    out = run_hook(monkeypatch, capsys, notification, session="boiler1")
+    assert out == ""
+    ws = WriteStore(os.path.join(host_repo, "monition"))
+    rows = ws._sql("SELECT id FROM firings WHERE session_id = 'boiler1'")
+    assert rows == []
+
+
+def test_task_notification_logs_boilerplate_skip(host_repo, monkeypatch, capsys):
+    run_hook(monkeypatch, capsys, "<task-notification>\n<task-id>x</task-id>",
+              session="boiler2")
+    with open(_log_path()) as f:
+        log = f.read()
+    assert "[boilerplate] skipped harness-generated prompt session=boiler2" in log
+
+
+def test_leading_whitespace_before_task_notification_still_skipped(
+        host_repo, monkeypatch, capsys):
+    # prompt_hook strips the prompt before the gate check runs.
+    out = run_hook(monkeypatch, capsys,
+                    "  \n<task-notification>\n<task-id>y</task-id>",
+                    session="boiler3")
+    assert out == ""
+
+
+def test_human_prompt_mentioning_task_notification_still_matches(
+        host_repo, monkeypatch, capsys):
+    # A prompt that merely *contains* the tag mid-text is real user content —
+    # only a leading match counts as boilerplate.
+    out = run_hook(
+        monkeypatch, capsys,
+        "I saw a <task-notification> in the log about the migration issue",
+        session="boiler4")
+    assert "[t7/f" in out

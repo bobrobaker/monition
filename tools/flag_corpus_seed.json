@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "_note": "Read-only seed for the self-improving flag matcher (flag_corpus.py). The first block transcribes autoflag.py's admitted-error regexes into canonical phrasings; the second block adds full-length conversational admissions (concessions the rigid regex misses), validated against real sessions — short synthetic phrasings barely overlap real long sentences, so a fork's cold-start floor needs realistic-length entries to fire at all. The live corpus at ~/.claude/flag-corpus.json grows from here at mine-time; this file is never written. All entries are generic/domain-neutral — no source-session specifics.",
+  "entries": [
+    {"phrase": "I was wrong about that", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I was mistaken about that", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "that was my mistake", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I should have checked that first", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I should have verified that before asserting it", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I should have tested that", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I asserted that without verifying it", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I claimed that without checking", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I didn't verify that", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I incorrectly assumed that", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "turns out I was wrong about that", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "you're right and I was wrong about that", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "you're right, I had that wrong", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I should have tested this before claiming it worked", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I should have read the existing code before writing it", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I jumped to a conclusion without checking the facts", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I didn't run it so I can't be sure it actually works", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I was wrong, and the root cause was something I overlooked", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I conflated two different things and it led me astray", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0},
+    {"phrase": "I missed that earlier and it changed the answer", "label": "GOVERNANCE", "helpful": 0, "noise": 0, "weight": 1.0}
+  ]
+}

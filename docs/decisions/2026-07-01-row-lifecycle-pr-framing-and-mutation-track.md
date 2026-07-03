@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-07-01 — Row lifecycle: precision/recall framing, dilution-priced ratings, and the mutation track
 
 **Status:** decided · frames Phases 6–7; also the rationale for the injection-cap /

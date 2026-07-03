@@ -368,7 +368,7 @@ class Store:
         )
         return [
             Takeaway(
-                id=r["id"], created=_parse_dt(r["created"]), kind=r["kind"],
+                id=int(r["id"]), created=_parse_dt(r["created"]), kind=r["kind"],
                 scope=r.get("scope"), trigger_kind=r["trigger_kind"],
                 trigger_spec=r.get("trigger_spec"), one_liner=r["one_liner"],
                 full_content=r.get("full_content"), source=r.get("source"),
@@ -388,12 +388,12 @@ class Store:
         )
         firings = [
             Firing(
-                id=r["id"], takeaway_id=r["takeaway_id"],
+                id=int(r["id"]), takeaway_id=int(r["takeaway_id"]),
                 fired_at=_parse_dt(r["fired_at"]), session_id=r.get("session_id"),
                 trigger_kind=r.get("trigger_kind"),
                 trigger_context=r.get("trigger_context"), outcome=r.get("outcome"),
                 git_sha=r.get("git_sha"),
-                git_dirty=bool(r["git_dirty"]) if r.get("git_dirty") is not None else None,
+                git_dirty=bool(int(r["git_dirty"])) if r.get("git_dirty") is not None else None,
                 model=r.get("model"), monition_version=r.get("monition_version"),
                 situation=r.get("situation"),
                 match_evidence=r.get("match_evidence"),
@@ -415,10 +415,10 @@ class Store:
         )
         decisions = [
             Decision(
-                id=r["id"], takeaway_id=r["takeaway_id"],
+                id=int(r["id"]), takeaway_id=int(r["takeaway_id"]),
                 session_id=r.get("session_id"), decided_at=_parse_dt(r["decided_at"]),
-                decision=r["decision"], evidence_count=r["evidence_count"],
-                cold_start=bool(r["cold_start"]),
+                decision=r["decision"], evidence_count=int(r["evidence_count"]),
+                cold_start=bool(int(r["cold_start"])),
                 ev_score=float(r["ev_score"]) if r.get("ev_score") is not None else None,
             )
             for r in rows
@@ -438,7 +438,7 @@ class Store:
         )
         mutations = [
             Mutation(
-                id=r["id"], takeaway_id=r["takeaway_id"],
+                id=int(r["id"]), takeaway_id=int(r["takeaway_id"]),
                 mutated_at=_parse_dt(r["mutated_at"]), verb=r["verb"],
                 changes=r["changes"], source=r.get("source"),
             )
@@ -459,7 +459,7 @@ class Store:
         )
         violations = [
             Violation(
-                id=r["id"], takeaway_id=r["takeaway_id"],
+                id=int(r["id"]), takeaway_id=int(r["takeaway_id"]),
                 session_id=r["session_id"], detected_at=_parse_dt(r["detected_at"]),
                 evidence=r.get("evidence"), repo=r.get("repo"),
             )

@@ -75,6 +75,40 @@ def _score_takeaway(takeaway_id, store, session, firings=None):
         return None  # fail-open: error is not evidence of noise
 
 
+# Harness-generated prompts arrive through the same UserPromptSubmit event as
+# a human-typed prompt but were never typed by anyone — a subagent's
+# completion notice, most visibly. These match stored takeaways just as
+# readily as real questions, so on a broad session they saturate the
+# injection cap turn after turn and — worse — get batch-rated "noise" by
+# whoever is clearing the cap, corrupting the eval substrate for whichever
+# rows happened to co-fire in that batch (t91-t98, see
+# docs/decisions/2026-07-02-boilerplate-prompt-gate.md).
+#
+# Deliberately narrow and evidenced, not a generic "looks systemy" heuristic:
+# a prefix match only, checked against the live hub store's `firings.situation`
+# for on_demand rows. `<task-notification>` is the one shape with real volume
+# (837 of 5,878 on_demand firings, ~14%, all sharing this exact opening tag —
+# Task-tool completion notices). Other candidate shapes considered and
+# rejected for lack of a repeatable evidenced prefix: a `<command-name>/clear
+# </command-name>`-bearing "Summarise the session transcript..." dump appeared
+# under only 2 distinct sessions (6 firings) with no stable opening prefix,
+# and no other tag (`<local-command-*>`, `<bash-*>`, `<monitor-*>`, `Caveat:`,
+# "This session is being continued") appears at all in the hub. Add a prefix
+# here only once it clears the same bar: a real, repeatable opening string in
+# `firings.situation`/`trigger_context`, not a guess.
+#
+# A prefix check, not a substring/contains check: a human prompt that merely
+# *mentions* a task-notification example mid-text is real user content, not
+# boilerplate, and must still be matched.
+_BOILERPLATE_PREFIXES = (
+    "<task-notification>",
+)
+
+
+def _is_boilerplate(prompt):
+    return prompt.startswith(_BOILERPLATE_PREFIXES)
+
+
 def _disabled():
     """Explicit per-invocation opt-out: any non-empty MONITION_DISABLE suppresses
     matching, injection, AND firing capture — meant for API-style headless runs
@@ -345,6 +379,13 @@ def prompt_hook():
         if not prompt:
             return
         session = str(data.get("session_id", "unknown"))
+        if _is_boilerplate(prompt):
+            # No matching, no firings — a harness-generated notice is not a
+            # user turn to score takeaways against. Quiet but observable:
+            # same log, same file as the [capped] line above.
+            _log(f"[boilerplate] skipped harness-generated prompt"
+                 f" session={session}")
+            return
 
         res = json.loads(store.on_demand_match(prompt, session, current_repo=repo))
         hits, capped = res["hits"], res["capped"]

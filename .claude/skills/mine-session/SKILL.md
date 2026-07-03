@@ -1,4 +1,3 @@
-<!-- monition-skill v0.4.0 sha256:1b6c8da0df47a57900f455abd330a9f5ea11681b6c1525fa8ff7ff9cc0fb1085 -->
 ---
 name: mine-session
 description: End-of-session mining pass — review this session for reusable lessons and house them in the takeaway store with explicit triggers. Use when the user invokes /mine-session, says "mine this session" / "save the takeaways", or is wrapping up a session that hit gotchas worth keeping. NOT for mid-session one-offs the user wants codified immediately (that's /codify, which can also insert a takeaway).
@@ -75,22 +74,28 @@ You are mining this session for takeaways. The store's semantics live in
      `method/takeaway-store.md` §Dolt mechanics).
 
 0d. **Grow and tighten the flag corpus (the autoflagger's self-improving half).** The
-   tier-2 lexical layer (`tools/flag_corpus.py`) only learns here — the Stop hook is
+   tier-2 lexical layer (`flag_corpus.py`) only learns here — the Stop hook is
    read-only on the corpus, so every mutation is a mine-time act over *this* session.
+   Resolve the script the way wrap-session resolves its helpers: **`<corpus>`** below
+   means the first of `~/.claude/cms/tools/flag_corpus.py` or
+   `$CLAUDE_PROJECT_DIR/tools/flag_corpus.py` that exists — a bare relative
+   `tools/flag_corpus.py` resolves only inside the CMS clone, and the fail-open
+   clause would otherwise silently skip 0d in every other repo, forever.
    Two passes, both consent-light (the corpus is a local matcher, not durable
    governance — a wrong entry self-corrects via demerit, so don't run rows-grade
-   scrutiny per phrase). **Fail open:** if `flag_corpus.py` is absent, skip 0d entirely.
+   scrutiny per phrase). **Fail open:** if no `<corpus>` path exists, skip 0d entirely.
    - **Recall — learn the misses.** For each *manual* flag this session (your inline
      self-flags and `/flag` entries — not the ones tagged `Auto-flag`), and for each
      admitted error 0b surfaced, find the response sentence that earned it and run
-     `python3 tools/flag_corpus.py score "<sentence>"`. **No hit → it's a miss:** the
+     `python3 <corpus> score "<sentence>"` (**empty output = no hit**, not an
+     error — score prints nothing on a miss). **No hit → it's a miss:** the
      matcher would not have caught it. Extract the *generalizable* phrasing (strip the
      session's specifics — keep the trap-shaped trigger words) and
-     `flag_corpus.py add "<phrase>" <LABEL>`. A hit means it's already covered — skip.
+     `<corpus> add "<phrase>" <LABEL>`. A hit means it's already covered — skip.
    - **Precision — judge the lexical fires.** For each `Auto-flag (lexical)` entry you
      drained, you've just decided whether it became a real lesson or was noise:
-     `flag_corpus.py credit "<phrase>"` if it routed to a real row/governance change,
-     `flag_corpus.py demerit "<phrase>"` if it was noise. (The phrase is quoted in the
+     `<corpus> credit "<phrase>"` if it routed to a real row/governance change,
+     `<corpus> demerit "<phrase>"` if it was noise. (The phrase is quoted in the
      flag's `lexical match … on the learned phrase '<phrase>'` line.) Demerits decay a
      mostly-noise entry below the firing floor; credits hold a useful one up.
    - The corpus lives at `~/.claude/flag-corpus.json` (machine-local, like the flags
@@ -134,8 +139,24 @@ You are mining this session for takeaways. The store's semantics live in
    zone (`MONITION_STORE`), gitignored and unpublished — that Dolt commit *is* its
    version control, so there is nothing to stage into this repo's git. Any working-tree
    `git commit` of code/docs is separate from the store snapshot.
-6. **Routing a domain-free lesson — queue it upstream.** A transferable lesson (one
-   that survives domain-stripping) is queued to `handoffs/upstream-candidates.md` for
-   the mirror-back sweep that pulls it up to the shared machinery; a lesson that only
-   applies to this repo stays a local row (`--reach project`, the default). A row meant
-   to fire across every repo, not just where authored, is `--reach general`.
+<!-- forkgen:strip -->
+6. **Routing a domain-free lesson — CMS is the upstream, so promote, don't queue.** In
+   a downstream fork a transferable lesson is queued to `upstream-candidates.md` for the
+   mirror-back sweep that pulls it *up*; CMS has no upstream, so decide now instead. If
+   the lesson would help a *fork* (it survives domain-stripping), propose it into the
+   shared machinery — a `method/` doc, a `starter/` template, or a shipped takeaway —
+   through the consent gate; if it only applies to building CMS or its modules, leave it
+   a local row (`--reach project`, the default). A row meant to fire across every repo,
+   not just where authored, is `--reach general`. Under the single-hub store
+   that reach choice IS the promotion for row-shaped lessons — rows live in the
+   shared hub, so no method/starter edit is needed unless the lesson changes
+   the machinery's prose.
+<!-- forkgen:/strip -->
+<!-- forkgen:swap step6 -->
+
+<!--
+forkgen note: the block above is CMS-only (CMS is the upstream). The fork variant of
+step 6 is single-sourced in `mine-session.fork-overrides.md` and spliced in at the
+`forkgen:swap step6` marker by monition's regen. Edit the fork wording THERE, not here.
+-->
+

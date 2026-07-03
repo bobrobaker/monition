@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # The replay-ablation runner — v1 design
 
 **Status:** Ratified 2026-06-14 (user). The runner build is unblocked, gated only

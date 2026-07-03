@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # Wire-protocol client for the resident sql-server (optional extra)
 
 **Date:** 2026-07-02 · **Status:** accepted (user-ratified: "I'm okay with pymysql

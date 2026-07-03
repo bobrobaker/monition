@@ -9,6 +9,7 @@ import shutil
 
 import pytest
 
+from monition import dolt_server
 from monition.store import Store, StoreContractError
 from monition.store_write import WriteStore
 
@@ -48,6 +49,121 @@ def test_dolt_reads_canonical(dolt_canonical):
     assert len(decisions) == 3
     assert takeaways[0].one_liner == "all noise"
     assert firings[4].outcome is None
+
+
+def test_dolt_field_types_and_values(dolt_canonical):
+    """Value- and type-level assertions, not just row counts — the gap this
+    bug class shipped through (`monition report`/`tune` misread every
+    cold_start/git_dirty row against the live hub while every test here still
+    passed, because nothing checked further than `len(...)`). Ground truth
+    from conftest.ROWS: d1 cold-start (evidence_count 0, ev_score None), d2
+    suppress (evidence_count 2, ev_score 0.0), d3 fire (evidence_count 2,
+    ev_score 0.5)."""
+    s = Store(dolt_canonical)
+    takeaways = s.takeaways()
+    firings = s.firings()
+    decisions = {d.id: d for d in s.decisions()}
+
+    assert all(isinstance(t.id, int) for t in takeaways)
+    assert all(isinstance(f.id, int) and isinstance(f.takeaway_id, int)
+               for f in firings)
+    assert firings[2].takeaway_id == 2  # f3 in conftest.ROWS: takeaway_id 2
+
+    d1, d2, d3 = decisions[1], decisions[2], decisions[3]
+    assert (d1.cold_start, d1.ev_score, d1.evidence_count) == (True, None, 0)
+    assert (d2.cold_start, d2.ev_score, d2.evidence_count) == (False, 0.0, 2)
+    assert (d3.cold_start, d3.ev_score, d3.evidence_count) == (False, 0.5, 2)
+    for d in decisions.values():
+        assert isinstance(d.id, int) and isinstance(d.takeaway_id, int)
+        assert isinstance(d.evidence_count, int)
+        assert isinstance(d.cold_start, bool)
+        assert d.ev_score is None or isinstance(d.ev_score, float)
+
+
+def test_dolt_stringified_scalars_survive_across_all_readers(dolt_copy, monkeypatch):
+    """Sibling of test_decisions.py's cold_start test and test_export_firings.py's
+    git_dirty test, run here against a real DoltBackend and widened to every
+    numeric field the store.py readers cast: id/takeaway_id (all readers),
+    evidence_count, cold_start, ev_score, git_dirty. Reproduces the documented
+    Dolt-CLI-JSON-through-server shape (storage_backends.DoltBackend.
+    _wire_norm_row: every scalar stringified, NULLs omitted) deterministically,
+    without depending on a live resident sql-server, whose stringification only
+    kicks in once it is actually mediating the query (see
+    test_dolt_live_sql_server_shape_casts_correctly below for that transport)."""
+    # conftest.ROWS leaves every firing's git_dirty NULL; seed one with a real
+    # (non-NULL) value so the git_dirty cast has ground truth to check here too.
+    dolt(["sql", "-q",
+          "INSERT INTO firings (takeaway_id, fired_at, session_id, trigger_kind,"
+          " git_dirty) VALUES (1, NOW(), 'conf-gd', 'edit_path', 0)"],
+         dolt_copy)
+
+    store = Store(dolt_copy)
+    real_execute = store._backend.execute_sql
+    numeric_cols = {"id", "takeaway_id", "evidence_count", "cold_start",
+                    "ev_score", "git_dirty"}
+
+    def stringify_all(sql):
+        rows = real_execute(sql)
+        return [
+            {k: (str(v) if k in numeric_cols and v is not None else v)
+             for k, v in r.items()}
+            for r in rows
+        ]
+
+    monkeypatch.setattr(store._backend, "execute_sql", stringify_all)
+
+    takeaways = store.takeaways()
+    firings = store.firings()
+    decisions = store.decisions()
+
+    assert all(isinstance(t.id, int) for t in takeaways)
+    assert all(isinstance(f.id, int) and isinstance(f.takeaway_id, int)
+               for f in firings)
+    seeded = next(f for f in firings if f.session_id == "conf-gd")
+    assert seeded.git_dirty is False  # bool("0") would misreport True
+
+    assert all(
+        isinstance(d.id, int) and isinstance(d.takeaway_id, int)
+        and isinstance(d.evidence_count, int) and isinstance(d.cold_start, bool)
+        for d in decisions
+    )
+    cold = next(d for d in decisions if d.cold_start)
+    assert cold.ev_score is None
+    warm = [d for d in decisions if not d.cold_start]
+    assert warm and all(isinstance(d.ev_score, float) for d in warm)
+
+
+def test_dolt_live_sql_server_shape_casts_correctly(tmp_path, monkeypatch):
+    """True-transport version of the two tests above: a real resident `dolt
+    sql-server` (opt-in via MONITION_SQL_SERVER, gated off by default —
+    conftest.py pops the env var at process level) mediates every query
+    end-to-end, which is where the documented stringify-every-scalar shape
+    actually originates (storage_backends.DoltBackend._wire_norm_row). The
+    monkeypatch tests above simulate that shape deterministically; this one
+    proves the real server produces it and Store still reads correctly.
+    A scratch store, explicitly torn down — never the shared dolt_canonical/
+    dolt_copy fixtures, so the resident server this test spawns can't leak
+    into any other test."""
+    path = str(tmp_path / "live_server_store")
+    build_dolt_store(path, [DOLT_SCHEMA, ROWS])
+    monkeypatch.setenv("MONITION_SQL_SERVER", "1")
+    try:
+        store = Store(path)
+        takeaways = store.takeaways()
+        firings = store.firings()
+        decisions = {d.id: d for d in store.decisions()}
+
+        assert dolt_server.running(path)  # actually mediated, not CLI-direct
+        assert all(isinstance(t.id, int) for t in takeaways)
+        assert all(isinstance(f.id, int) and isinstance(f.takeaway_id, int)
+                   for f in firings)
+        d1, d2, d3 = decisions[1], decisions[2], decisions[3]
+        assert (d1.cold_start, d1.ev_score, d1.evidence_count) == (True, None, 0)
+        assert (d2.cold_start, d2.ev_score, d2.evidence_count) == (False, 0.0, 2)
+        assert (d3.cold_start, d3.ev_score, d3.evidence_count) == (False, 0.5, 2)
+        assert all(isinstance(d.evidence_count, int) for d in decisions.values())
+    finally:
+        dolt_server.stop(path)
 
 
 def test_dolt_rejects_missing_table(dolt_copy):

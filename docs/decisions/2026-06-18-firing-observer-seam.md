@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-18 · Firing-observer seam (opt-in, decoupled, fail-open)
 
 **Question.** A firing should be able to drive a machine-local side effect — the

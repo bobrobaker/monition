@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # Firing capture: the minimum a firing must carry for the cheap eval
 
 **Status:** Resolved (confer 2026-06-14, eval-engine-seam-and-archive-durability;

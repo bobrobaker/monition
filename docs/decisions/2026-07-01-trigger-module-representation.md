@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # Trigger-module representation: interpretation layer, columns for parameters, event-grain provenance
 
 Status: accepted (user, 2026-07-02 — B01 consent gate cleared)

@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-18 · A noise rating targets the Filter, not the Gate
 
 **Status.** Design **direction**, investigation-grounded, **not implemented**.

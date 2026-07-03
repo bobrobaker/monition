@@ -131,6 +131,28 @@ def test_present_provenance_typed(export_store):
     assert recs[1]["monition_version"] == "0.4.0"
 
 
+def test_git_dirty_survives_stringified_scalars(export_store, monkeypatch):
+    """Sibling of the decisions.cold_start bug: git_dirty is the same
+    tinyint(1) shape, so Dolt's CLI-JSON-through-server path stringifies it
+    too. bool("0") is True, so an un-cast bool(r["git_dirty"]) would
+    misreport every clean-tree firing (f1, git_dirty=0) as dirty."""
+    store = Store(export_store)
+    real_execute = store._backend.execute_sql
+
+    def stringify_git_dirty(sql):
+        rows = real_execute(sql)
+        if "FROM firings" not in sql:
+            return rows
+        return [{**r, "git_dirty": str(r["git_dirty"])} if r.get("git_dirty") is not None
+                else r for r in rows]
+
+    monkeypatch.setattr(store._backend, "execute_sql", stringify_git_dirty)
+    by_id = {f.id: f for f in store.firings()}
+    assert by_id[1].git_dirty is False  # ground truth: git_dirty=0
+    assert by_id[2].git_dirty is True   # ground truth: git_dirty=1
+    assert by_id[3].git_dirty is None   # ground truth: NULL, untouched
+
+
 # --- decisions table excluded ----------------------------------------------
 
 def test_decisions_fields_absent(export_store):

@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-21 — Relevance cascade: B02 NO-GO, workstream paused
 
 **Status:** decided · closes the active run of Phase 5 (relevance-cascade) at B02.

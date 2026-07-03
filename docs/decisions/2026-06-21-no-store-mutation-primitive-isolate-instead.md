@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-21 · No store-mutation primitive — isolate synthetic writes instead
 
 Status: decided. Scope: project-internal (monition store write surface). Sibling:

@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-19 · Decompose `monition init` into `init-store` + `instrument`
 
 **Status.** Design ratified via the monition↔CMS confer (2026-06-19, archived at

@@ -1,3 +1,6 @@
+---
+status: decided
+---
 # 2026-06-17 · `--adopt` flag deprecation posture
 
 **Context.** `monition init --adopt <file>` imports a tier-0 lessons file as part
