@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v monition >/dev/null 2>&1 || exit 0; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/monition\"; mkdir -p \"$d\"; monition fire-hook 2>>\"$d/hook-errors.log\" || true"
+            "command": "[ -z \"$MONITION_DISABLE\" ] || exit 0; command -v monition >/dev/null 2>&1 || exit 0; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/monition\"; mkdir -p \"$d\"; monition fire-hook 2>>\"$d/hook-errors.log\" || true"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v monition >/dev/null 2>&1 || exit 0; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/monition\"; mkdir -p \"$d\"; monition session-brief 2>>\"$d/hook-errors.log\" || true"
+            "command": "[ -z \"$MONITION_DISABLE\" ] || exit 0; command -v monition >/dev/null 2>&1 || exit 0; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/monition\"; mkdir -p \"$d\"; monition session-brief 2>>\"$d/hook-errors.log\" || true"
           }
         ]
       }
@@ -35,7 +35,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "command -v monition >/dev/null 2>&1 || exit 0; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/monition\"; mkdir -p \"$d\"; monition prompt-hook 2>>\"$d/hook-errors.log\" || true"
+            "command": "[ -z \"$MONITION_DISABLE\" ] || exit 0; command -v monition >/dev/null 2>&1 || exit 0; d=\"${XDG_STATE_HOME:-$HOME/.local/state}/monition\"; mkdir -p \"$d\"; monition prompt-hook 2>>\"$d/hook-errors.log\" || true"
           }
         ]
       }
