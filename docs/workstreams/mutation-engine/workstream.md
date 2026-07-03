@@ -1,6 +1,11 @@
 # Workstream: Mutation Engine (Phase 7)
 
-Progress: B01–B05 done (2026-07-02). B06/proposal-engine stays signal-gated — check FN volume + match_evidence accumulation (workstream signal gate) before activating.
+Progress: B01–B06 done (2026-07-02) — all buckets complete. Exit gate: consented
+mutations applied on the hub same day (merge t115→t113, migrate t122, stale
+retire t6 — user-consented, mutations logged); lifecycle observed (t91, t113);
+injected-volume reduction measured on stored firings (78% of the retired clone's
+traffic was duplication). Remaining: helpful-rate confirmation from post-mutation
+sessions via `monition report` after a few days — then the phase closes.
 Blocked: none
 
 ## Objective
@@ -37,7 +42,7 @@ engine last, after live signal has accumulated. Frame:
 | B03 | done | buckets/B03_per-row-threshold.md | `tune` becomes per-row actuator (gated) — NO-GO, apply parked; v8 shipped | B02 |
 | B04 | done | buckets/B04_batch-attribution.md | Shared-cause noise batches attribute to breadth layer | — |
 | B05 | done | buckets/B05_tool-call-module.md | PreToolUse tool-call module + executor | B02 |
-| B06 | later | buckets/B06_proposal-engine.md | Audit-cadence proposal read + consent-gated apply + provenance | B02, B04 |
+| B06 | done | buckets/B06_proposal-engine.md | Audit-cadence proposal read + consent-gated apply + provenance | B02, B04 |
 
 States: `next`, `active`, `blocked`, `done`, `deferred`, `later`.
 
@@ -135,3 +140,13 @@ on days of data (the sequencing constraint that gated this whole phase).
   prompts broke firing INSERTs silently. (c) `_merge_hook_entries` staleness
   now keys on matcher too — matcher-only changes propagate via sync.
   Workstream state: only B06 remains, behind its signal gate.
+- [2026-07-02] B06 done same day (signal gate measured OPEN: 1779 evidenced
+  firings / 583 rated / 15 violations): `monition propose` (six deterministic,
+  evidence-cited rule classes over export/violations/match_evidence with B04
+  batch discount) + the narrow `retarget` verb (mutations provenance). Cross-
+  bucket gotcha, live-falsified: co-firing alone is NOT duplicate evidence —
+  B04's batch dumps dominate co-occurrence, so the merge rule also requires
+  ≥3 shared spec/one-liner tokens. Hub run: 16 proposals, and the zero-count
+  classes verified honest (no ≥2-solo-noise keyword exists; graduate near-miss
+  t85 at 45% vs 50% bar). Exit gate: awaiting user consent on one proposal +
+  replay counterfactual.

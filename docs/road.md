@@ -27,9 +27,13 @@ a refinement conversation, not enough to implement directly.
   (the "hub"), with the project/general distinction carried as columns (`reach` +
   `origin_repo`), not physical per-repo boundaries. monition resolves the store
   from `MONITION_STORE` → `<repo-root>/monition/` fallback (unset = standalone
-  mode); CMS owns the hub's location + lifecycle. Backend: **Dolt is our own
-  default** (the hub is a Dolt store); SQLite stays the recommended default only
-  for external/standalone hosts that won't install dolt — see
+  mode); CMS owns the hub's location + lifecycle. **Backend model (settled — do
+  not re-litigate):** Dolt is our own default (the hub is a Dolt store); SQLite
+  stays the recommended default only for external/standalone hosts that won't
+  install dolt (detection: `.dolt/` vs `store.db`). This is a **conditional
+  refinement, not a contradiction** — the dated `sqlite-default` /
+  `dolt-default` decision docs are *provenance* for how we got here, not
+  competing live claims; see
   `docs/decisions/2026-06-18-dolt-default-ours-sqlite-external.md`. Cross-machine
   distribution deferred to the Dolt-server seam. Field semantics are never
   reinterpreted outside the data contract in `docs/contracts/takeaway-store.md`.
@@ -284,12 +288,19 @@ the rating pass; firings verifiably store full match evidence.
 
 ### Phase 7 — The mutation engine (rows improve, not just fire-or-die)
 
-**Status:** dispatched 2026-07-01 — workstream
-`docs/workstreams/mutation-engine/` (6 buckets, ordered by data-readiness:
-representation → behavior-locked refactor → ratings-backed calibration +
-attribution → tool-call module → proposal engine last, behind an explicit
-signal gate). Phase 6 exit met same day; the proposal engine (B06) stays gated
-on FN/match_evidence volume accumulating.
+**Status:** B01–B06 COMPLETE (2026-07-02); exit gate pending one confirmation —
+workstream `docs/workstreams/mutation-engine/` (B01/B02 module representation +
+behavior-locked refactor; B03 v8 + `calibrate`, apply parked NO-GO; B04 batch
+attribution — 80% of rated noise is batch-borne; B05 `tool_call` module, t91
+migrated live; B06 `monition propose` — six deterministic evidence-cited
+proposal classes + the narrow `retarget` verb). B06's signal gate measured OPEN
+2026-07-02 (1779 evidenced firings / 583 rated / 15 violations). Lifecycle
+observed on the hub (t91 migrate, t113 merge) and consented mutations applied
+same day (merge t115→t113 — 78% of the retired clone's traffic was pure
+duplication; migrate t122; stale-retire t6), mutations logged with provenance.
+**Pending:** equal-or-better helpful-rate over post-mutation sessions
+(`monition report` after ~days of accumulation) — that confirmation closes the
+phase.
 
 **Deliverable:** rows mutate along the determinism ladder instead of only firing or
 dying. (a) **Trigger-module abstraction**: a row's trigger is a swappable, composable

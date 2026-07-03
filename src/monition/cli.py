@@ -233,6 +233,13 @@ def main(argv=None):
                                   "tool_call; omit for session_start)")
     s.add_argument("--source", help="provenance pointer for the mutation")
 
+    s = lifecycle("retarget",
+                  help="rewrite a row's trigger_spec within its current kind "
+                       "— a consented mutation with event-grain provenance")
+    s.add_argument("takeaway_id")
+    s.add_argument("spec", help="the new trigger_spec (JSON object for tool_call)")
+    s.add_argument("--source", help="provenance pointer for the mutation")
+
     s = lifecycle("set-signature",
                   help="set or clear a row's violation signature (JSON spec; "
                        "validated at write time)")
@@ -340,6 +347,14 @@ def main(argv=None):
                         "gate; writes mutations provenance)")
     s.add_argument("--gate", action="store_true",
                    help="run the pre-registered held-out gate (read-only)")
+
+    s = sub.add_parser(
+        "propose",
+        help="audit-cadence mutation proposals over per-row evidence "
+             "(read-only; applying one is a separate consented verb)")
+    s.add_argument("--store", help="store directory (default: <repo-root>/monition/)")
+    s.add_argument("--json", action="store_true",
+                   help="machine-readable JSON instead of the text report")
 
     s = sub.add_parser("query", help="match on_demand takeaways by keyword against query text")
     s.add_argument("query_text", metavar="query", help="free-text query string")
@@ -500,6 +515,19 @@ def main(argv=None):
             else:
                 print(cal.render_calibrate(cal.propose(Store(path))))
             return 0
+        if args.cmd == "propose":
+            from . import proposals
+            path = args.store or resolve_store_path()
+            if not path:
+                raise StoreContractError(
+                    "no store path: pass --store or run inside a git repo"
+                )
+            result = proposals.propose(Store(path))
+            if args.json:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(proposals.render(result))
+            return 0
         if args.cmd == "export-firings":
             path = args.store or resolve_store_path()
             if not path:
@@ -580,6 +608,8 @@ def main(argv=None):
                 "fire": lambda: ws.fire(args.takeaway_id, args.trigger_kind,
                                         args.session, args.context, current_repo=cr),
                 "rate": lambda: ws.rate(args.firing_id, args.outcome),
+                "retarget": lambda: ws.retarget(
+                    iid(args.takeaway_id), args.spec, source=args.source),
                 "set-signature": lambda: _run_set_signature(ws, args),
                 "set-trigger": lambda: ws.set_trigger(
                     iid(args.takeaway_id), args.new_trigger_kind,

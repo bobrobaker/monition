@@ -328,6 +328,45 @@ class WriteStore(Store):
         return (f"takeaway {rows[0]['id']} migrated {old_kind} -> "
                 f"{trigger_kind} — mutation logged")
 
+    def retarget(self, id_, trigger_spec, source=None):
+        """Rewrite a row's trigger_spec within its current kind — the
+        `retarget` mutation verb (contract §mutations, initial vocabulary).
+        The narrow actuator behind tighten/broaden/migrate-keyword proposals:
+        same-kind spec edit, old spec recorded in an event-grain `mutations`
+        row before the write. Never called automatically — every use is a
+        human-accepted proposal (no auto-apply anywhere)."""
+        rows = self._sql(
+            "SELECT id, trigger_kind, trigger_spec FROM takeaways"
+            f" WHERE id = {iid(id_)}")
+        if not rows:
+            raise StoreContractError(f"no takeaway with id {id_}")
+        kind = rows[0]["trigger_kind"]
+        if kind == "session_start":
+            raise StoreContractError(
+                "session_start has no trigger_spec to retarget — migrating "
+                "the kind is set_trigger's job")
+        if kind == "tool_call":
+            trigger_spec = validate_tool_call_spec(trigger_spec)
+        elif not trigger_spec:
+            raise StoreContractError(
+                f"{kind} requires a non-empty trigger_spec")
+        old_spec = rows[0].get("trigger_spec")
+        if trigger_spec == old_spec:
+            raise StoreContractError(
+                f"retarget is a no-op: takeaway {rows[0]['id']} already has "
+                "that trigger_spec")
+        changes = json.dumps(
+            {"trigger_spec": {"old": old_spec, "new": trigger_spec}})
+        self._sql(f"UPDATE takeaways SET trigger_spec = {self._val(trigger_spec)}"
+                  f" WHERE id = {iid(id_)}")
+        self._sql(
+            "INSERT INTO mutations (takeaway_id, mutated_at, verb, changes,"
+            f" source) VALUES ({iid(id_)}, NOW(), 'retarget',"
+            f" {self._val(changes)}, {self._val(source)})"
+        )
+        return (f"takeaway {rows[0]['id']} retargeted "
+                f"({old_spec!r} -> {trigger_spec!r}) — mutation logged")
+
     def set_threshold(self, id_, value, source=None):
         """Set or clear (value=None) a row's per-row semantic threshold — the
         `tune` mutation verb (contract §Trigger modules / §mutations). A
