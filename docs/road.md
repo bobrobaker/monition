@@ -321,6 +321,43 @@ helpful-rate vs. the pre-mutation baseline.
 
 ---
 
+### Phase 8 — Hook hot-path: per-invocation store cost
+
+**Status:** COMPLETE (2026-07-02, dispatched and exited same day) — workstream
+`docs/workstreams/hook-hot-path/` (B01 batch validation: 10 spawns → 1; B02
+batched firing writes + fire-and-forget observer; B03 wire client, pymysql
+`[wire]` extra, decision `2026-07-02-wire-client-extra.md`: 0.9ms/query vs
+151.7ms CLI spawn; B04 exit eval). **Exit met:** warm medians prompt-hook
+431ms ≤ 0.5s, fire-hook 52ms ≤ 0.3s (baseline 2.8–3.4s / 1.3–1.6s); fail-open
+chain proven by test (server killed under live wire connection → CLI serves).
+
+**Deliverable:** hook events stop paying one subprocess spawn per store
+interaction. Warm baseline (2026-07-02, hub-sized store, sql-server + embed
+daemon on): prompt-hook ~2.8–3.4s, fire-hook ~1.3–1.6s, of which ~90% is `dolt`
+CLI spawns at ~160ms each — 10 schema-validation describes per store open (the
+~1.2s "store-open floor", a layer none of the June levers touched), plus
+per-query reads and one INSERT spawn per firing; matching math itself is ~15ms
+and Python spawn+imports ~130ms (invisible to the tracer). Target: warm
+prompt-hook ≤ ~0.5s, fire-hook ≤ ~0.3s, keeping the cold-subprocess fail-open
+model.
+
+**Design constraints:** batch levers first, no new deps — all validation
+describes in one `dolt sql -q` invocation (measured: 4 describes cost the same
+~160ms as 1), per-prompt firing INSERTs batched like decisions already are, one
+observer notify per prompt. Then a wire-protocol client to the already-running
+sql-server as an *optional extra* (~1–5ms/query, one connection per hook event,
+fail-open to the CLI path) — gets its own design review (new optional dep;
+write-path implications). A resident hook daemon (true 10s-of-ms) is explicitly
+out of scope: it abandons the cold-subprocess model; park unless the above
+levers measure insufficient.
+
+**Exit:** warm prompt-hook ≤ 0.5s and fire-hook ≤ 0.3s on a hub-sized scratch
+store (never the hub), traced before/after against the 2026-07-02 baseline,
+with the fail-open chain verified intact (server killed mid-hook → hook still
+completes via the CLI path).
+
+---
+
 ### Next
 
 Phase 5 (above) is the ongoing phase, dispatched 2026-06-21. Phase 4 exited
@@ -424,7 +461,13 @@ Open candidates:
   `dolt sql -q` (writes *and* describes — a describe racing a spawn would else read
   as "table missing"). Opt-in via `MONITION_SQL_SERVER` (mirrors the embed daemon;
   default off = unchanged); auto-routing means whoever spawns it fixes the whole
-  fleet, so CMS sets it machine-wide. CLI: `sql-server-status` / `sql-server-stop`.
+  fleet via one machine-wide env flag — a hand-set step CMS documents and `--doctor`s,
+  not bootstrap automation (set live on this machine 2026-07-02, together with
+  `MONITION_EMBED_DAEMON`). CLI: `sql-server-status` / `sql-server-stop`.
+  "No MySQL client" holds for the base install; Phase 8 (2026-07-02) added the
+  optional `[wire]` extra (pymysql) as a pure transport to this same server —
+  ~1ms/query vs ~160ms/CLI spawn, fail-open back to the CLI path
+  (`docs/decisions/2026-07-02-wire-client-extra.md`).
   Decision: `docs/decisions/2026-06-19-dolt-sql-server-write-path.md`. Tests:
   `tests/test_dolt_server.py`. **Unblocks** `instrument --global` (now buildable).
 - **B05 mcp-server — DONE (landed 2026-06-12).** `monition mcp-serve` (FastMCP via

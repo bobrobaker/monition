@@ -6,7 +6,9 @@ database is read only"), and a bounced firing is a lost firing. A running
 `dolt sql-server` serializes writes in-process, and the dolt CLI auto-detects it
 (via `.dolt/sql-server.info`) and routes every `dolt sql -q` through it — so the
 existing subprocess write path becomes contention-free with *no* client change.
-This module's whole job is to ensure such a server is running.
+This module ensures such a server is running and, via address(), tells the
+optional wire client (storage_backends, `[wire]` extra, Phase 8) where to
+connect so queries skip the CLI spawn entirely.
 
 Opt-in, off by default (mirrors the embed warm daemon): default behaviour is the
 per-call subprocess path, byte-for-byte unchanged. Fail-open is absolute — a
@@ -15,8 +17,11 @@ subprocess path (lossy-under-contention, exactly as before).
 
 Auto-routing means whoever spawns the server fixes the whole fleet: even a session
 that never sets MONITION_SQL_SERVER routes its `dolt sql -q` through a server
-another session started. So CMS sets the flag machine-wide (alongside
-MONITION_STORE) and every session's writes serialize through the shared server.
+another session started. The flag is set machine-wide in the same hand-maintained
+settings env block as MONITION_STORE (a step CMS documents and `--doctor`s, not
+bootstrap automation — see the 2026-07-02 correction in
+docs/decisions/2026-06-19-dolt-sql-server-write-path.md), so every session's
+writes serialize through the shared server.
 """
 import errno
 import fcntl
@@ -98,6 +103,16 @@ def running(store_path):
     localhost connect is instant); only a wedged server pays the probe timeout."""
     info = _read_info(store_path)
     return bool(info and _pid_alive(info[0]) and _port_open(info[1]))
+
+
+def address(store_path):
+    """('127.0.0.1', port) when a server is accepting on this store, else None.
+    The wire client (storage_backends, `[wire]` extra) connects here instead of
+    spawning the dolt CLI per query; same accepting-gate as running()."""
+    info = _read_info(store_path)
+    if info and _pid_alive(info[0]) and _port_open(info[1]):
+        return ("127.0.0.1", info[1])
+    return None
 
 
 def ensure_running(store_path, dolt_bin):

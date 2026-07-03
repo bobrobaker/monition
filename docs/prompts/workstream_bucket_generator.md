@@ -254,3 +254,4 @@ Bucket file rules:
 Introspection notes + feedback notes go here with a timestamp and a suggestion:
 - 2026-06-11 00:00: Initial version for this project, instantiated from the upstream template.
 - 2026-06-12: Dolt omits NULL columns from JSON output entirely — accessing `row["col"]` raises KeyError when the value is NULL, not None. For any bucket that reads nullable columns via raw `_sql()` results, spec assertions as `row.get("col")` rather than `row["col"]`. Add as a gotcha in any data-pipeline bucket that touches nullable Dolt columns.
+- 2026-07-02: Perf-workstream buckets — bench medians under-show per-hit levers when session dedup caps fired hits per prompt (a batched-writes bucket looked like a regression until a 5-hit run showed the win). Spec validation as medians + an explicit multi-hit assertion run (id-truth style), never medians alone.

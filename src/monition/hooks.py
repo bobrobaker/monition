@@ -12,6 +12,9 @@ Fail-open is two-layered (spec decisions 4 + 14): the executors swallow every
 exception internally (absent store, absent dolt → silent return), and the
 guarded command string below covers hard crashes — stderr lands in the
 per-machine state log, the session is never blocked.
+
+MONITION_DISABLE (any non-empty value) opts a single invocation out of all
+three executors — see _disabled().
 """
 import json
 import os
@@ -28,9 +31,7 @@ from .store_write import WriteStore
 # enough to hold essentially any real prompt or edit excerpt.
 SITUATION_CHARS = 4000
 
-# Opt-in firing observer: a hang ceiling, not an expected latency. The session is
-# never blocked on the observer (fail-open), so this only bounds a wedged command.
-OBSERVER_TIMEOUT_S = 5
+# (The opt-in firing observer is fire-and-forget — see _notify_observer.)
 
 
 def _log_path():
@@ -74,9 +75,20 @@ def _score_takeaway(takeaway_id, store, session, firings=None):
         return None  # fail-open: error is not evidence of noise
 
 
+def _disabled():
+    """Explicit per-invocation opt-out: any non-empty MONITION_DISABLE suppresses
+    matching, injection, AND firing capture — meant for API-style headless runs
+    (`MONITION_DISABLE=1 claude -p ...`) where hook latency and firing-log noise
+    are unwanted. The guarded command short-circuits in the shell before Python
+    starts; this check covers hosts whose settings predate that template. Scoped
+    to the hook executors only — the CLI and reader ignore it."""
+    return bool(os.environ.get("MONITION_DISABLE"))
+
+
 def guarded_hook_command(subcommand):
     """The canonical command string `init` writes into settings.json hooks."""
     return (
+        '[ -z "$MONITION_DISABLE" ] || exit 0; '
         "command -v monition >/dev/null 2>&1 || exit 0; "
         'd="${XDG_STATE_HOME:-$HOME/.local/state}/monition"; mkdir -p "$d"; '
         f'monition {subcommand} 2>>"$d/hook-errors.log" || true'
@@ -141,15 +153,17 @@ def _notify_observer(session, slug):
     integration (e.g. the author's Claude Code statusline "⚑" widget) is never
     hard-coded here, keeping monition distributable.
 
-    Fail-open in its own try/except: a bad command, a crash, or a hang (bounded by
-    OBSERVER_TIMEOUT_S) is logged and swallowed, never blocking or delaying the
-    firing/injection that already happened."""
+    Fail-open in its own try/except: a bad command or a crash is logged and
+    swallowed. Fire-and-forget (Phase 8): the hook never waits on the observer —
+    a wedged observer costs the session nothing, and the hook process exits
+    right after, reparenting the child to init for reaping."""
     observer = os.environ.get("MONITION_FIRING_OBSERVER")
     if not observer:
         return
     try:
         cmd = shlex.split(observer) + ["--session", str(session), "--text", str(slug)]
-        subprocess.run(cmd, capture_output=True, timeout=OBSERVER_TIMEOUT_S)
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
         _log(f"[observer-error] {e}")
 
@@ -161,6 +175,7 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
     # One firings-table read per prompt, shared across every hit's score() call.
     firings = store.firings() if hits else None
     decisions = []  # batched to one INSERT after the loop (lever 3)
+    to_fire = []
     for h in hits:
         result = _score_takeaway(h["id"], store, session, firings)
         if result is not None:
@@ -168,15 +183,32 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
                               result["evidence_count"], result["cold_start"],
                               result["ev_score"]))
             if result["decision"] == "suppress":
-                # reason distinguishes a cold-pause from an evidence-based suppress
-                label = result.get("reason") or "suppress"
-                _log(f"[{label}] t{h['id']} session={session}")
+                # No log line: the decision row (decision + cold_start +
+                # evidence_count) already records this; routine suppressions
+                # were drowning real errors in hook-errors.log.
                 continue
         # result is None → fail-open fire (no decision row); else decision == 'fire'
-        firing = store.fire(str(h["id"]), trigger_kind, session, context, model,
-                            situation, current_repo=current_repo,
-                            evidence=h.get("evidence"))
-        fid = (firing or "").split()[-1] if firing else "?"
+        to_fire.append(h)
+    # One INSERT + one read-back for the whole prompt (Phase 8 — fire() costs
+    # 3 subprocesses per hit). Fail-open: any batch problem falls back to the
+    # slow-but-proven per-hit path; firings are never dropped silently.
+    fids = None
+    if to_fire:
+        try:
+            fids = store.fire_batch(
+                [(str(h["id"]), h.get("evidence")) for h in to_fire],
+                trigger_kind, session, context, model, situation,
+                current_repo=current_repo)
+        except Exception as e:
+            _log(f"[fire-batch-error] falling back to per-hit fire: {e}")
+    for i, h in enumerate(to_fire):
+        if fids is None:
+            firing = store.fire(str(h["id"]), trigger_kind, session, context,
+                                model, situation, current_repo=current_repo,
+                                evidence=h.get("evidence"))
+            fid = (firing or "").split()[-1] if firing else "?"
+        else:
+            fid = fids[i]
         _notify_observer(session, h["one_liner"])
         lines.append(f"[t{h['id']}/f{fid}] {h['one_liner']}")
     if decisions:
@@ -189,6 +221,8 @@ def _disclose(store, hits, trigger_kind, session, context=None, model=None,
 
 
 def fire_hook():
+    if _disabled():
+        return
     try:
         trace.mark("start")
         data = json.load(sys.stdin)
@@ -251,6 +285,8 @@ def fire_hook():
 
 
 def session_brief():
+    if _disabled():
+        return
     try:
         trace.mark("start")
         data = json.load(sys.stdin)
@@ -295,6 +331,8 @@ def session_brief():
 
 
 def prompt_hook():
+    if _disabled():
+        return
     try:
         trace.mark("start")
         data = json.load(sys.stdin)

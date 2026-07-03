@@ -24,6 +24,19 @@ def _isolate_state_home(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
     monkeypatch.delenv("MONITION_STORE", raising=False)
 
+
+# Daemon opt-ins are stripped at IMPORT time, not in the fixture above: with
+# MONITION_SQL_SERVER set machine-wide (the 2026-07-02 cutover), every
+# Dolt-store test spawns a resident sql-server on its throwaway tmp store and
+# leaks it — the exact transient-store littering the opt-in decision exists to
+# prevent. A function-scoped autouse delenv does NOT cover session-scoped
+# fixtures (canonical_store & co. set up before it runs) — verified 2026-07-02:
+# nine leaked servers on deleted pytest dirs. Process-level pop covers every
+# fixture scope and every subprocess. Tests that exercise the daemons
+# (test_dolt_server.py) setenv explicitly per-test.
+os.environ.pop("MONITION_SQL_SERVER", None)
+os.environ.pop("MONITION_EMBED_DAEMON", None)
+
 # SQLite schema for test fixtures — same DDL that `monition init` uses.
 SCHEMA = V8_SCHEMA_SQLITE
 

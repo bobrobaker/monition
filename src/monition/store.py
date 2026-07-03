@@ -263,14 +263,18 @@ class Store:
         containing backslashes or quotes corrupt on SQLite otherwise."""
         return "NULL" if s is None else self._backend.quote(s)
 
-    def _detect_stale_schema(self):
+    def _detect_stale_schema(self, cols_by_table):
         """Version-ladder detection, oldest→newest, so the migrate message names
         the *actual* gap. Runs before the per-table column checks (which assume v6
-        columns). Missing-table cases fall through to those checks."""
+        columns). Missing-table cases fall through to those checks.
+
+        `cols_by_table` is the single describe_all result fetched by
+        `_validate_schema` — the ladder must not issue its own per-table
+        describes (each is a subprocess on the hook hot path)."""
         takeaway_cols = {r["Field"]: r["Type"]
-                         for r in self._backend.describe("takeaways")}
-        firing_cols = {r["Field"] for r in self._backend.describe("firings")}
-        decisions_present = bool(self._backend.describe("decisions"))
+                         for r in cols_by_table.get("takeaways", [])}
+        firing_cols = {r["Field"] for r in cols_by_table.get("firings", [])}
+        decisions_present = bool(cols_by_table.get("decisions"))
 
         # v1 detection (Dolt only — SQLite stores are always fresh)
         if (self._backend.name == "dolt"
@@ -304,7 +308,7 @@ class Store:
         # The three v7 pieces migrate atomically, so any one missing means v6 —
         # but a missing *table* is not a version signal; it falls through to the
         # per-table checks (hence the per-indicator table guards).
-        violations_present = bool(self._backend.describe("violations"))
+        violations_present = bool(cols_by_table.get("violations"))
         if ((takeaway_cols and "violation_signature" not in takeaway_cols)
                 or (firing_cols and "match_evidence" not in firing_cols)
                 or (takeaway_cols and firing_cols and not violations_present)):
@@ -315,7 +319,7 @@ class Store:
             )
         # The three v8 pieces migrate atomically too; a missing `mutations`
         # table alone is not a version signal (per-indicator table guards).
-        mutations_present = bool(self._backend.describe("mutations"))
+        mutations_present = bool(cols_by_table.get("mutations"))
         if ((takeaway_cols and "sem_threshold" not in takeaway_cols)
                 or (takeaway_cols and firing_cols and not mutations_present)):
             raise StoreContractError(
@@ -327,9 +331,17 @@ class Store:
         required = (
             _REQUIRED_SQLITE if self._backend.name == "sqlite" else _REQUIRED
         )
-        self._detect_stale_schema()
+        # One describe_all for both the ladder and the per-table checks — the
+        # required tables and the ladder tables are the same five, and each
+        # separate describe is a subprocess on the hook hot path (was 10/open).
+        describe_all = getattr(self._backend, "describe_all", None)
+        if describe_all is None:  # e.g. a test stub backend
+            cols_by_table = {t: self._backend.describe(t) for t in required}
+        else:
+            cols_by_table = describe_all(list(required))
+        self._detect_stale_schema(cols_by_table)
         for table, cols_required in required.items():
-            col_rows = self._backend.describe(table)
+            col_rows = cols_by_table.get(table, [])
             if not col_rows:
                 raise StoreContractError(
                     f"missing required table `{table}` in {self.path}"

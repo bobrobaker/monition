@@ -39,18 +39,21 @@ the host opts in by naming a command; Monition never assumes one exists.
   log. A score-**suppressed** hit is not a firing and never reaches the observer.
 - **Covers all trigger kinds.** The call is at the single disclosure choke point
   (`_disclose` in `src/monition/hooks.py`), so it fires uniformly for
-  `edit_path` (PreToolUse), `session_start` (SessionStart), and `on_demand`
-  (UserPromptSubmit) firings.
+  `edit_path` and `tool_call` (PreToolUse), `session_start` (SessionStart), and
+  `on_demand` (UserPromptSubmit) firings.
 
 ## Fail-open guarantees
 
 The observer is a side effect, never a dependency of disclosure:
 
-- The call is wrapped in its **own `try/except`**; any error is logged to the
+- The spawn is wrapped in its **own `try/except`**; any error is logged to the
   per-machine hook-error log and swallowed.
-- A **`5s` timeout** (`OBSERVER_TIMEOUT_S`) bounds a wedged command. This is a hang
-  ceiling, not an expected latency — a real observer (e.g. a JSON write) returns in
-  milliseconds.
+- **Fire-and-forget** (since 2026-07-02, hook hot-path): the hook `Popen`s the
+  observer with detached stdio and never waits — a wedged observer costs the
+  session nothing, and the hook's exit reparents the child for reaping. (This
+  replaced the earlier 5s `OBSERVER_TIMEOUT_S` hang ceiling; observers should
+  still return in milliseconds — they may now overlap the session's next
+  activity.)
 - A failing, slow, or missing observer **never blocks, delays, or suppresses** the
   firing or the context injection that already happened.
 

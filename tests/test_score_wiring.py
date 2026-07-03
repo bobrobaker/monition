@@ -146,23 +146,26 @@ def test_notify_observer_noop_when_unset(monkeypatch):
 
 
 def test_notify_observer_invocation_contract(monkeypatch):
-    """Env var set → `<observer> --session <id> --text <slug>`, prefix shlex-split."""
+    """Env var set → `<observer> --session <id> --text <slug>`, prefix shlex-split,
+    fire-and-forget (Popen, never waited on)."""
     monkeypatch.setenv("MONITION_FIRING_OBSERVER", "/usr/bin/true --verbose")
     ran = []
-    monkeypatch.setattr(mh.subprocess, "run", lambda cmd, **kw: ran.append((cmd, kw)))
+    monkeypatch.setattr(mh.subprocess, "Popen", lambda cmd, **kw: ran.append((cmd, kw)))
 
     mh._notify_observer("sess1", "stale store-model claim")
     assert len(ran) == 1
     cmd, kw = ran[0]
     assert cmd == ["/usr/bin/true", "--verbose",
                    "--session", "sess1", "--text", "stale store-model claim"]
-    assert kw.get("timeout") == mh.OBSERVER_TIMEOUT_S
+    # Fire-and-forget: streams detached so the child can't block on a pipe.
+    assert kw.get("stdout") is mh.subprocess.DEVNULL
+    assert kw.get("stderr") is mh.subprocess.DEVNULL
 
 
 def test_notify_observer_error_is_swallowed(monkeypatch):
-    """Observer crashes/hangs → error swallowed (fail-open), no exception raised."""
+    """Observer spawn crashes → error swallowed (fail-open), no exception raised."""
     monkeypatch.setenv("MONITION_FIRING_OBSERVER", "/usr/bin/true")
-    monkeypatch.setattr(mh.subprocess, "run",
+    monkeypatch.setattr(mh.subprocess, "Popen",
                         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
 
     mh._notify_observer("sess1", "a slug")  # must not raise
@@ -174,13 +177,13 @@ def test_observer_failure_does_not_suppress_injection(host_repo, monkeypatch):
     provenance (shared subprocess module) is delegated to the real run."""
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", host_repo)
     monkeypatch.setenv("MONITION_FIRING_OBSERVER", "/usr/bin/observer-xyz")
-    real_run = mh.subprocess.run
+    real_popen = mh.subprocess.Popen
 
-    def selective_run(cmd, **kw):
+    def selective_popen(cmd, **kw):
         if cmd and cmd[0] == "/usr/bin/observer-xyz":
             raise RuntimeError("observer exploded")
-        return real_run(cmd, **kw)
+        return real_popen(cmd, **kw)
 
-    monkeypatch.setattr(mh.subprocess, "run", selective_run)
+    monkeypatch.setattr(mh.subprocess, "Popen", selective_popen)
     out = feed(fire_hook, host_repo, rel_path="docs/a.md", monkeypatch=monkeypatch)
     assert out != ""  # disclosure still emitted despite observer failure

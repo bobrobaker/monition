@@ -27,12 +27,16 @@ Vocabulary: "Monition store" for the per-project instance, "takeaways" (or
 
 ## Context hygiene
 
-- **Docs lag code — trust the source, not the prose.** The store model is v7
+- **Docs lag code — trust the source, not the prose.** The store model is v8
   (v6: general/project scoping via `reach`+`origin_repo`, `mirror` retired, backend
   default Dolt for us — `docs/decisions/2026-06-18-dolt-default-ours-sqlite-external.md`;
   v7: violation signatures + `match_evidence` + the `violations` table — the recall
-  column, Phase 6); the per-repo→hub fold (B04) is the one piece still pending CMS's
-  hub path. Treat docs
+  column, Phase 6; v8: `sem_threshold` + the `mutations` table — the mutation
+  track, Phase 7); the per-repo→hub fold (B04) is the one piece still pending CMS's
+  hub path. Store access rides the resident `dolt sql-server`
+  (`MONITION_SQL_SERVER=1` machine-wide since 2026-07-02) and, when the `[wire]`
+  extra is installed, the pymysql wire transport (~1ms/query; fail-open to the
+  dolt CLI) — hooks are ~50–450ms warm, Phase 8. Treat docs
   as an index to *where* code lives, never as ground truth for *what it does*. Confirm
   any load-bearing claim against the source; when behavior is the question, run a quick
   test or REPL check rather than inferring from a doc.

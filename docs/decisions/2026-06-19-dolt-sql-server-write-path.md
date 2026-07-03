@@ -60,6 +60,16 @@ hazard. That left one call: when does monition spawn it?
   machine-wide alongside `MONITION_STORE`, and once any session has it on the whole live
   hub is covered via auto-routing; zero regression for SQLite/standalone/test/CI; default
   off = behaviourally identical to today.
+  > **Corrected 2026-07-02:** "CMS sets it machine-wide" described a *convention*, not
+  > automation — verified structurally in CMS: no code path there writes the global
+  > `~/.claude/settings.json` env block (`bootstrap.sh`/`deploy_settings.py` only touch a
+  > target repo's per-repo `settings.local.json`). The flags are the same hand-set
+  > personal env step as `MONITION_STORE` itself; CMS *documents and doctors* it
+  > (`link_global()` prints the reminder, `--doctor` WARNs on a Dolt hub / embed extra
+  > without its flag). The cutover sat unexecuted from 2026-06-19 until 2026-07-02, when
+  > both flags were set by hand and live-validated (hook latency roughly halves, variance
+  > disappears). See CMS `docs/decisions/2026-06-19-monition-hub-at-landing-zone.md`
+  > ("Extended 2026-07-02").
 - *Default-on for the Dolt write path* — rejected: treats lost writes as a correctness bug
   that shouldn't need a flag, but spawns a lingering server from every transient Dolt store
   (one-off `monition report`, every test, CI), littering processes that need teardown

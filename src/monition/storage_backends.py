@@ -8,13 +8,25 @@ New stores via `monition init` default to SQLite.
 The seam sits *under* Store/WriteStore; they remain the single approved
 reader/writer.
 """
+import datetime
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 
 from . import dolt_server
+
+try:                     # optional `[wire]` extra — MySQL wire protocol to the
+    import pymysql       # resident sql-server (~1-5ms/query vs ~160ms/CLI spawn,
+except ImportError:      # decision 2026-07-02-wire-client-extra). Absent → the
+    pymysql = None       # CLI path below, byte-for-byte unchanged.
+
+# Transport-level MySQL errnos: can't connect / server gone / lost connection.
+# These fall back to the CLI; every other MySQL error is a QUERY error and must
+# raise StorageBackendError exactly like the CLI path would.
+_WIRE_TRANSPORT_ERRNOS = {2003, 2006, 2013}
 
 
 class StorageBackendError(Exception):
@@ -79,6 +91,13 @@ class SqliteBackend:
             conn.close()
         return [{"Field": r["name"], "Type": r["type"]} for r in rows]
 
+    def describe_all(self, tables):
+        """{table: [{Field, Type}]} for every table — the schema-fingerprint
+        projection only (unlike Dolt's raw describe, no Null/Key/Extra).
+        In-process and cheap here; exists for signature parity with
+        DoltBackend's one-subprocess version."""
+        return {t: self.describe(t) for t in tables}
+
     def dump(self, store_dir):
         target = os.path.join(store_dir, "dump.sql")
         with sqlite3.connect(self.db_path) as conn:
@@ -99,12 +118,17 @@ class SqliteBackend:
 
 
 class DoltBackend:
-    """Dolt storage backend — shells out to the dolt binary."""
+    """Dolt storage backend. Queries ride the MySQL wire protocol to the
+    resident sql-server when the `[wire]` extra is installed and a server is
+    accepting (~1ms/query); otherwise — and as the fail-open fallback — each
+    query shells out to the dolt binary (~160ms/spawn)."""
 
     name = "dolt"
 
     def __init__(self, path):
         self._path = path  # store directory (contains .dolt/)
+        self._wire_conn = None   # lazy, one per backend instance — no pooling
+        self._wire_dead = False  # set on unrecoverable open failure (auth, no db)
 
     def _run(self, args, check=True):
         out = subprocess.run(
@@ -127,6 +151,10 @@ class DoltBackend:
         # manifest lock. Fail-open and a no-op when disabled — the `dolt sql -q`
         # below auto-routes through any running server, so this needs no client.
         dolt_server.ensure_running(self._path, _dolt_bin())
+        if pymysql is not None and not self._wire_dead:
+            rows = self._wire_execute(sql)
+            if rows is not None:
+                return rows
         out = subprocess.run(
             [_dolt_bin(), "sql", "-q", sql, "-r", "json"],
             cwd=self._path, capture_output=True, text=True,
@@ -136,21 +164,138 @@ class DoltBackend:
         text = out.stdout.strip()
         return json.loads(text).get("rows", []) if text else []
 
-    def describe(self, table):
-        """Returns [{Field, Type}] for each column; [] when table is missing."""
-        # Gate on the server too: describe swallows errors into [], so a describe
-        # racing a concurrent server spawn (store lock held, not yet accepting)
-        # would read as "table missing" and fail schema validation. Ensuring the
-        # server first makes every `dolt sql -q` wait for it to accept.
-        dolt_server.ensure_running(self._path, _dolt_bin())
-        out = subprocess.run(
-            [_dolt_bin(), "sql", "-q", f"DESCRIBE `{table}`", "-r", "json"],
-            cwd=self._path, capture_output=True, text=True,
+    # --- wire transport (optional [wire] extra) -----------------------------
+    # Same SQL, same single write path — only how bytes reach the resident
+    # sql-server changes (decision 2026-07-02-wire-client-extra). Fail-open
+    # chain: transport problem → CLI subprocess; query error → StorageBackendError
+    # identical to the CLI path (a bad query must fail, not silently re-run).
+
+    def _wire_execute(self, sql):
+        """Rows via the resident server's wire protocol, or None → caller uses
+        the CLI. Never raises for transport reasons; raises StorageBackendError
+        for query errors."""
+        try:
+            conn = self._wire_conn or self._wire_open()
+        except Exception:
+            self._wire_dead = True   # auth/db-resolution failure — stop trying
+            return None
+        if conn is None:             # no accepting server right now — retry later
+            return None
+        try:
+            with conn.cursor(pymysql.cursors.DictCursor) as cur:
+                cur.execute(sql)
+                rows = cur.fetchall() if cur.description else []
+            return [self._wire_norm_row(r) for r in rows]
+        except pymysql.MySQLError as e:
+            errno_ = e.args[0] if e.args and isinstance(e.args[0], int) else None
+            if errno_ in _WIRE_TRANSPORT_ERRNOS:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._wire_conn = None   # next call reconnects (or CLI-falls-back)
+                return None
+            raise StorageBackendError(str(e)) from e
+
+    def _wire_open(self):
+        """Connect to the accepting server, resolve the store's database, cache
+        the connection. None when no server is accepting (not an error — the
+        CLI path handles this call). Raises on auth/db-resolution failure, which
+        _wire_execute converts into a permanent per-process opt-out."""
+        addr = dolt_server.address(self._path)
+        if addr is None:
+            return None
+        conn = pymysql.connect(
+            host=addr[0], port=addr[1], user="root", password="",
+            connect_timeout=0.5, autocommit=True,
         )
-        if out.returncode != 0:
+        with conn.cursor() as cur:
+            cur.execute("SHOW DATABASES")
+            names = [r[0] for r in cur.fetchall()]
+        system = {"information_schema", "mysql", "performance_schema", "sys"}
+        candidates = [n for n in names if n not in system]
+        # dolt names the db after the store dir (unsupported chars → _).
+        want = re.sub(r"[^A-Za-z0-9_$]", "_",
+                      os.path.basename(os.path.abspath(self._path)))
+        db = want if want in candidates else (
+            candidates[0] if len(candidates) == 1 else None)
+        if db is None:
+            conn.close()
+            raise StorageBackendError(
+                f"wire: cannot resolve store db among {candidates}")
+        conn.select_db(db)
+        self._wire_conn = conn
+        return conn
+
+    @staticmethod
+    def _wire_norm_row(row):
+        """CLI-JSON parity: dolt `-r json` THROUGH THE SERVER stringifies every
+        value and omits NULL keys (verified live 2026-07-02; serverless direct
+        access emits native JSON numbers instead — consumers tolerate both,
+        via int(...)/row.get). Wire only ever runs where a server is accepting,
+        so mirror the through-server shape exactly."""
+        out = {}
+        for k, v in row.items():
+            if v is None:
+                continue
+            if isinstance(v, datetime.datetime):
+                out[k] = v.strftime("%Y-%m-%d %H:%M:%S")
+            elif isinstance(v, datetime.date):
+                out[k] = v.strftime("%Y-%m-%d")
+            elif isinstance(v, bytes):
+                out[k] = v.decode("utf-8", "replace")
+            elif isinstance(v, str):
+                out[k] = v
+            else:
+                out[k] = str(v)   # int / Decimal — CLI emits these as strings
+        return out
+
+    def describe(self, table):
+        """Returns [{Field, Type}] for each column; [] when table is missing.
+        Routed through execute_sql so it rides the wire when available; the
+        ensure_running gate there also keeps a describe from racing a concurrent
+        server spawn into a false "table missing"."""
+        try:
+            return self.execute_sql(f"DESCRIBE `{table}`")
+        except StorageBackendError:
             return []
-        text = out.stdout.strip()
-        return json.loads(text).get("rows", []) if text else []
+
+    def describe_all(self, tables):
+        """Every table's columns in ONE subprocess: {table: [{Field, Type}]} —
+        the schema-fingerprint projection only, NOT describe()'s full rows
+        (no Null/Key/Extra). Schema validation used to pay one DESCRIBE spawn
+        per table per store open (~160ms each × 10 — the dominant hook-latency
+        cost, Phase 8); information_schema answers them all in a single
+        invocation. Any error or unrecognizable result shape falls back to
+        per-table describe so validation outcomes stay identical to the
+        one-table-at-a-time path."""
+        if not tables:
+            return {}
+        names = ", ".join(self.quote(t) for t in tables)
+        sql = (
+            "SELECT table_name AS Tbl, column_name AS Field, column_type AS Type "
+            "FROM information_schema.columns "
+            f"WHERE table_schema = DATABASE() AND table_name IN ({names}) "
+            "ORDER BY table_name, ordinal_position"
+        )
+        try:
+            rows = self.execute_sql(sql)
+        except StorageBackendError:
+            return {t: self.describe(t) for t in tables}
+        out = {t: [] for t in tables}
+        matched = False
+        for r in rows:
+            # Key case is the engine's choice for aliases — normalize.
+            rk = {(k or "").lower(): v for k, v in r.items()}
+            t = rk.get("tbl")
+            if t in out:
+                matched = True
+                out[t].append({"Field": rk.get("field"), "Type": rk.get("type")})
+        if rows and not matched:
+            # Result shape not what we expect (alias handling changed?) —
+            # trust the per-table path over guessing.
+            return {t: self.describe(t) for t in tables}
+        return out
 
     def dump(self, store_dir):
         self._run(["dump", "-f"])

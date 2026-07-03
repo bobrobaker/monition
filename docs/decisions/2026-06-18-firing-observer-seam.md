@@ -25,6 +25,12 @@ convention (`MONITION_TEST_CRASH`):
   never blocking, delaying, or suppressing the firing/injection that already
   happened. Honors monition's two-layered fail-open doctrine (executors swallow
   everything; the guarded command string covers hard crashes).
+  > **Extended 2026-07-02 (hook hot-path, Phase 8):** the blocking `run` +
+  > 5s hang-ceiling became fire-and-forget `Popen` (detached stdio, never
+  > waited on) — the observer's blocking wait was a per-firing latency line
+  > item on the hook hot path. Count semantics unchanged (still one spawn per
+  > fired row). Contract updated: `docs/contracts/firing-observer.md`
+  > §Fail-open guarantees.
 - **Count semantics.** Called once per fired row, after the score gate and the
   `store.fire` log — so the observer's running count equals the number of firings,
   matching the ⚑ widget's intent. Suppressed hits never reach it.

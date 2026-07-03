@@ -41,7 +41,7 @@ against a Monition store (bypassing the reader) is a contract violation.
 ## Versioning and rejection
 
 The store carries no explicit schema-version marker. Until one exists, **the column
-fingerprint is the version check**: the reader verifies that all three required tables exist, that
+fingerprint is the version check**: the reader verifies that every required table documented below exists, that
 every column listed below is present with the stated type family, and that the enum
 domains match exactly. On any mismatch it raises (`StoreContractError`) — it never
 skips rows, coerces values, or guesses. Additive columns unknown to this contract

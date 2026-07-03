@@ -515,21 +515,77 @@ class WriteStore(Store):
         # precision for general-reach rows. v5 `situation`: the executor's excerpt.
         provenance_root = current_repo or os.path.dirname(self.path)
         git_sha, git_dirty = _git_provenance(provenance_root)
+        self._sql(self._FIRINGS_INSERT + self._firing_values(
+            takeaway_id, trigger_kind, session, context, git_sha, git_dirty,
+            model, situation, current_repo, evidence))
+        row = self._sql("SELECT MAX(id) AS id FROM firings")
+        return f"firing {row[0]['id']}"
+
+    _FIRINGS_INSERT = (
+        "INSERT INTO firings (takeaway_id, fired_at, session_id, trigger_kind,"
+        " trigger_context, git_sha, git_dirty, model, monition_version, situation,"
+        " repo, match_evidence) VALUES "
+    )
+
+    def _firing_values(self, takeaway_id, trigger_kind, session, context,
+                       git_sha, git_dirty, model, situation, current_repo,
+                       evidence):
         # v7 match evidence: the full, lossless record of what the trigger
         # matched on (dict from the matcher), serialized here. None for fires
         # logged outside the matchers (manual fire, log-recurrence).
         evidence_json = json.dumps(evidence) if evidence is not None else None
-        self._sql(
-            "INSERT INTO firings (takeaway_id, fired_at, session_id, trigger_kind,"
-            " trigger_context, git_sha, git_dirty, model, monition_version, situation,"
-            " repo, match_evidence)"
-            f" VALUES ({iid(takeaway_id)}, NOW(), {self._val(session)},"
+        return (
+            f"({iid(takeaway_id)}, NOW(), {self._val(session)},"
             f" {self._val(trigger_kind)}, {self._val(context)}, {self._val(git_sha)},"
             f" {bval(git_dirty)}, {self._val(model)}, {self._val(_monition_version())}, {self._val(situation)},"
             f" {self._val(current_repo)}, {self._val(evidence_json)})"
         )
-        row = self._sql("SELECT MAX(id) AS id FROM firings")
-        return f"firing {row[0]['id']}"
+
+    def fire_batch(self, hits, trigger_kind, session=None, context=None,
+                   model=None, situation=None, current_repo=None):
+        """Fire every hit of one prompt in ONE INSERT (hook hot path, Phase 8 —
+        `fire()` costs two subprocess spawns per hit plus a git-provenance
+        subprocess each; a multi-hit prompt paid all of it per hit).
+        `hits`: [(takeaway_id, evidence_or_None), ...]. Returns the firing ids
+        aligned with `hits` order.
+
+        Id recovery does NOT assume batch ids are consecutive: it re-reads the
+        newest rows for THIS session and matches them back by takeaway_id.
+        Sessions write one prompt at a time, so our own rows can't interleave;
+        other sessions' concurrent rows are excluded by the session filter.
+        Per-row SQL is single-sourced with fire() via _firing_values."""
+        hits = list(hits)
+        if not hits:
+            return []
+        provenance_root = current_repo or os.path.dirname(self.path)
+        git_sha, git_dirty = _git_provenance(provenance_root)
+        self._sql(self._FIRINGS_INSERT + ", ".join(
+            self._firing_values(tid, trigger_kind, session, context, git_sha,
+                                git_dirty, model, situation, current_repo, ev)
+            for tid, ev in hits))
+        rows = self._sql(
+            "SELECT id, takeaway_id FROM firings"
+            f" WHERE session_id = {self._val(session)}"
+            f" ORDER BY id DESC LIMIT {len(hits)}"
+        )
+        if len(rows) != len(hits):
+            raise StoreContractError(
+                f"fire_batch wrote {len(hits)} firings but read back {len(rows)}"
+            )
+        # rows are newest-first == reverse of VALUES order; assign per
+        # takeaway_id so the [tX/fY] line names the row actually written.
+        by_takeaway = {}
+        for r in reversed(rows):
+            by_takeaway.setdefault(int(r["takeaway_id"]), []).append(int(r["id"]))
+        ids = []
+        for tid, _ in hits:
+            pool = by_takeaway.get(int(tid))
+            if not pool:
+                raise StoreContractError(
+                    f"fire_batch read-back is missing takeaway {tid}"
+                )
+            ids.append(pool.pop(0))
+        return ids
 
     def rate(self, firing_id, outcome):
         self._sql(f"UPDATE firings SET outcome = {self._val(outcome)} WHERE id = {iid(firing_id)}")

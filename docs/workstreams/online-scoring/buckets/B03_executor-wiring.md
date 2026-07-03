@@ -66,6 +66,9 @@ decision string.)*
 - Suppression log line format: `[suppress] t{takeaway_id} session={session_id}\n`
   appended to `~/.local/state/monition/hook-errors.log` (same path as error log).
   This is observability-only; no behavior depends on it.
+  Correction (2026-07-02, hook hot-path): the suppression log line was REMOVED —
+  routine suppressions were drowning real errors in hook-errors.log, and the
+  decisions row already records the same fact; the error log is errors-only now.
 - Core invariant: the fail-open catch wraps ONLY the score() call. The fire() call
   that follows is NOT inside the try — an error in fire() should still surface as it
   does today (it is already guarded by guarded_hook_command).
